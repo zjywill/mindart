@@ -310,3 +310,68 @@ clients/codex-plugin/
 - Claude Code 插件参考文档：https://code.claude.com/docs/en/plugins-reference
 - Codex MCP 配置：https://developers.openai.com/codex/mcp
 - 已知渲染问题：https://github.com/modelcontextprotocol/ext-apps/issues/671
+
+---
+
+## 12. 实施交接说明（给执行本方案的 agent）
+
+> 本节是可执行起点。按 M0 → M4 顺序推进，每个里程碑以 §9 的验收标准收口。
+
+### 12.1 环境与工程约定
+
+- Node ≥ 20，包管理用 pnpm（workspace：`packages/server`、`packages/ui`、`clients/*`）；TypeScript strict。
+- 实现顺序严格按里程碑走，**不要跳过 M0**：M0 的产出（三端渲染结论 + 桥接代码）决定后面所有 UI 工作是否要调整。
+- §7 的工具名表是唯一命名真源；§6 的 board.json 是唯一数据真源。文档与实现冲突时，先改文档再改代码。
+
+### 12.2 M0 的具体步骤
+
+1. `git clone https://github.com/modelcontextprotocol/ext-apps` —— 官方仓库自带 **examples（示例 server）与 basic-host（本地宿主）**，以其中最小示例为骨架起步，不要从零手写握手；
+2. server：`@modelcontextprotocol/sdk`（TypeScript）+ ext-apps 的 apps SDK（**包名以 ext-apps 仓库 README 为准**，规划期未锁定——见 §12.4），注册一个 `ui://mindart/hello.html` 资源 + 一个带 `_meta.ui.resourceUri` 的 `mindart_open_canvas` 工具；
+3. hello.html 里验证四件事：`ui/initialize` 握手拿到 hostContext、CSS 变量读取、`ui/notifications/size-changed` 生效、`tools/call` round-trip（调一个 echo 工具）；
+4. 本地调试链：先用 ext-apps 自带 basic-host / MCPJam inspector 跑通，再依次接入三端实测：Claude Code（`claude mcp add`）→ Claude Desktop（Connectors）→ Codex（`codex mcp add` 或 config.toml）；
+5. 产出物：`docs/m0-report.md`，记录三端渲染矩阵（成功/失败/截图）、ext-apps#671 是否复现、`ui/message` 与 `ui/update-model-context` 在两端的实际行为差异。
+
+### 12.3 项目目录解析规则（board 落盘位置）
+
+按以下优先级确定 `MINDART_ROOT`（server 启动时解析一次并打日志）：
+
+1. 环境变量 `MINDART_PROJECT_DIR`（插件壳/用户显式指定）；
+2. server 进程 cwd 存在 `.git` 或已有 `mindart/` 目录 → 使用 cwd（Claude Code / Codex CLI 场景，宿主以项目目录启动 stdio server）；
+3. 兜底 `~/Documents/MindArt/`（Claude Desktop 场景，无项目概念）。
+
+board 路径：`$MINDART_ROOT/mindart/<board-id>/board.json` + `assets/`；缩略图缓存 `assets/.thumbs/`（gitignore）。
+
+### 12.4 实施时必须核验的事实（规划期无法锁定）
+
+| 事项 | 核验方式 | 有出入时 |
+|---|---|---|
+| ext-apps SDK 的确切 npm 包名与 API | 看 ext-apps 仓库 README/examples 的 import | 以仓库为准，回填本文档 |
+| Codex `.codex-plugin/plugin.json` 字段 | clone Cowart 对照其清单 | 以 Cowart 实测为准 |
+| `ui/message` 两端支持度与 UX | M0 第 5 步实测 | 若某端不可用，该端生成触发降级为：UI 置 queued + 提示用户在对话里说"继续生成"，skill 里教模型主动 `mindart_get_board` 拉取 pending 请求 |
+| mind-elixir arrow 的 from/to 数据可靠性 | M1 选型验证（§5.1） | 关联线自管：refs 为真源 + 自绘 SVG 叠加层 |
+| mind-elixir `dangerouslySetInnerHTML` 内的输入框焦点/快捷键冲突 | M1 选型验证 | 编辑交互移到侧边抽屉，卡上只读 |
+| Claude Desktop iframe 渲染 bug（ext-apps#671） | M0 实测 | 该端标记"暂不支持"，主打 Claude Code + claude.ai + Codex |
+
+### 12.5 skill 草稿（`mindart-generate`，两端同源）
+
+```markdown
+---
+name: mindart-generate
+description: 处理 MindArt 画板发来的图像生成请求：读取参考图，生成图片，回填画板。
+  当对话中出现「MindArt 生成请求 req-…」或用户要求为画板出图时使用。
+---
+收到 MindArt 生成请求时，严格按以下步骤执行，不要把图片贴在对话里了事：
+1. 请求中列出了结合指令、参考图路径（≤5 张，各带取用说明）。用多模态能力读取全部参考图。
+2. 生成图片。优先顺序：宿主内置图像生成 → 环境中可用的生图 MCP 工具 → 均不可用时，
+   调 mindart_report_error(request_id, "no image generation capability")并告知用户接入方式。
+3. 将产出写入该画板目录 assets/（文件名 gen-<request_id>.png）。
+4. 调用 mindart_apply_result(request_id, image_path) 回填。失败调 mindart_report_error。
+5. 回复用户一句话结论即可，无需描述图片细节（画板会直接展示）。
+```
+
+### 12.6 明确不要做的事（防实施跑偏）
+
+- 不要引入 React/Vue 重框架包住 mind-elixir（单文件体积敏感，vanilla TS + mind-elixir 足够）；
+- 不要在 M2 前碰通道 B（直连生图 API）；
+- 不要自研树布局/快捷键系统（那等于放弃选型结论）；
+- 不要把图片 base64 内联进 board.json 或 HTML（走 assets 文件 + 按需读取）。
