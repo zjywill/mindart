@@ -48,6 +48,20 @@ const MIME_TYPES: Record<string, string> = {
   ".webp": "image/webp",
 };
 
+const EXTENSION_BY_MIME_TYPE: Record<string, string> = {
+  "image/apng": ".apng",
+  "image/avif": ".avif",
+  "image/gif": ".gif",
+  "image/jpeg": ".jpg",
+  "image/png": ".png",
+  "image/svg+xml": ".svg",
+  "image/webp": ".webp",
+};
+
+export const MAX_IMPORT_IMAGE_BYTES = 20 * 1024 * 1024;
+export const MAX_IMPORT_IMAGE_BASE64_LENGTH =
+  Math.ceil(MAX_IMPORT_IMAGE_BYTES / 3) * 4;
+
 interface GenerationResult {
   board: Board;
   requestId: string;
@@ -67,6 +81,33 @@ function safeFileStem(value: string): string {
     .replace(/[^\w.-]+/gu, "-")
     .replace(/^-+|-+$/gu, "");
   return stem || "image";
+}
+
+function resolveImageExtension(fileName: string, mimeType?: string): string {
+  const fileExtension = path.extname(fileName).toLowerCase();
+  if (IMAGE_EXTENSIONS.has(fileExtension)) return fileExtension;
+  const mimeExtension = mimeType
+    ? EXTENSION_BY_MIME_TYPE[mimeType.toLowerCase()]
+    : undefined;
+  if (mimeExtension) return mimeExtension;
+  throw new Error(`Unsupported image type: ${fileExtension || mimeType || "(none)"}`);
+}
+
+function decodeImageData(data: string): Buffer {
+  const normalized = data.replace(/\s+/gu, "");
+  if (
+    !normalized ||
+    normalized.length % 4 !== 0 ||
+    !/^[A-Za-z0-9+/]+={0,2}$/u.test(normalized)
+  ) {
+    throw new Error("Image data must be valid base64");
+  }
+  const contents = Buffer.from(normalized, "base64");
+  if (!contents.length) throw new Error("Image file is empty");
+  if (contents.length > MAX_IMPORT_IMAGE_BYTES) {
+    throw new Error("Image file must be 20 MB or smaller");
+  }
+  return contents;
 }
 
 function clone<T>(value: T): T {
@@ -328,22 +369,50 @@ export class MindArtStore {
 
   async importImage(options: {
     boardId?: string;
-    sourcePath: string;
+    sourcePath?: string;
+    imageData?: string;
+    fileName?: string;
+    mimeType?: string;
     parentNodeId?: string;
     title?: string;
   }): Promise<{ board: Board; nodeId: string }> {
-    const sourcePath = await this.resolveInputImage(options.sourcePath);
+    const hasSourcePath = Boolean(options.sourcePath?.trim());
+    const hasImageData = Boolean(options.imageData?.trim());
+    if (hasSourcePath === hasImageData) {
+      throw new Error("Provide either an image file or a source path");
+    }
+
+    let sourcePath: string | undefined;
+    let imageData: Buffer | undefined;
+    let sourceName: string;
+    let extension: string;
+
+    if (hasSourcePath) {
+      sourcePath = await this.resolveInputImage(options.sourcePath!);
+      sourceName = path.basename(sourcePath);
+      extension = path.extname(sourcePath).toLowerCase();
+    } else {
+      sourceName = options.fileName?.trim() ?? "";
+      if (!sourceName) throw new Error("Image file name is required");
+      extension = resolveImageExtension(sourceName, options.mimeType);
+      imageData = decodeImageData(options.imageData!);
+    }
+
     const board = await this.openBoard(options.boardId);
-    const extension = path.extname(sourcePath).toLowerCase();
     const nodeId = `node-${randomUUID().slice(0, 10)}`;
-    const assetName = `${safeFileStem(options.title ?? path.basename(sourcePath, extension))}-${randomUUID().slice(0, 6)}${extension}`;
+    const defaultTitle = path.basename(sourceName, path.extname(sourceName));
+    const assetName = `${safeFileStem(options.title ?? defaultTitle)}-${randomUUID().slice(0, 6)}${extension}`;
     const relativeAsset = path.posix.join("assets", assetName);
     const destination = path.join(
       this.boardDirectory(board.id),
       relativeAsset,
     );
     await mkdir(path.dirname(destination), { recursive: true });
-    await copyFile(sourcePath, destination);
+    if (sourcePath) {
+      await copyFile(sourcePath, destination);
+    } else {
+      await writeFile(destination, imageData!);
+    }
 
     const updated = await this.mutateBoard(board.id, (draft) => {
       const nodes = flattenBoard(draft.root);
@@ -355,8 +424,7 @@ export class MindArtStore {
       }
       parent.children.push({
         id: nodeId,
-        title:
-          options.title?.trim() || path.basename(sourcePath, extension) || "素材图",
+        title: options.title?.trim() || defaultTitle || "素材图",
         status: "ready",
         asset: relativeAsset,
         expanded: true,

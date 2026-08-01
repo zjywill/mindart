@@ -118,6 +118,34 @@ describe("MindArtStore", () => {
     expect(failed.root.children[0]?.error).toBe("No image tool");
   });
 
+  it("imports uploaded image data without a local source path", async () => {
+    const board = await store.openBoard("board-upload", "Upload");
+    const imported = await store.importImage({
+      boardId: board.id,
+      imageData: PIXEL.toString("base64"),
+      fileName: "reference.png",
+      mimeType: "image/png",
+    });
+    const node = imported.board.root.children[0]!;
+
+    expect(node).toMatchObject({
+      title: "reference",
+      status: "ready",
+    });
+    expect(node.asset).toMatch(/^assets\/reference-/u);
+    const asset = await store.readAsset(imported.board.id, node.asset!);
+    expect(Buffer.from(asset.data, "base64")).toEqual(PIXEL);
+  });
+
+  it("rejects invalid uploaded image data", async () => {
+    await expect(
+      store.importImage({
+        imageData: "not-base64",
+        fileName: "broken.png",
+      }),
+    ).rejects.toThrow("valid base64");
+  });
+
   it("enforces the total five-reference limit including the parent", async () => {
     let board = await store.openBoard("board-limit", "Limit");
     const parent = await store.importImage({

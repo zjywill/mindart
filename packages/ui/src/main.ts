@@ -51,6 +51,26 @@ type MindOperation = {
   };
 };
 const DOWN_DIRECTION = 3 as const;
+const MAX_IMPORT_FILE_BYTES = 20 * 1024 * 1024;
+const SUPPORTED_IMAGE_EXTENSIONS = new Set([
+  "apng",
+  "avif",
+  "gif",
+  "jpeg",
+  "jpg",
+  "png",
+  "svg",
+  "webp",
+]);
+const SUPPORTED_IMAGE_TYPES = new Set([
+  "image/apng",
+  "image/avif",
+  "image/gif",
+  "image/jpeg",
+  "image/png",
+  "image/svg+xml",
+  "image/webp",
+]);
 const MINDART_THEME = {
   name: "MindArt",
   type: "dark" as const,
@@ -129,7 +149,7 @@ appRoot.innerHTML = `
         <span id="save-state" class="save-state" role="status" aria-live="polite"></span>
       </div>
       <div class="toolbar-panel toolbar-actions">
-        <button class="icon-button" id="import-button" type="button" aria-label="导入图片" title="导入图片">${icon("import")}</button>
+        <button class="icon-button" id="import-button" type="button" aria-label="选择图片" title="选择图片">${icon("import")}</button>
         <button class="icon-button" id="fit-button" type="button" aria-label="适应画板" title="适应画板">${icon("scan")}</button>
         <button class="icon-button" id="fullscreen-button" type="button" aria-label="切换全屏" title="切换全屏">${icon("maximize")}</button>
         <span class="toolbar-divider" aria-hidden="true"></span>
@@ -146,6 +166,20 @@ appRoot.innerHTML = `
           <strong>暂无图卡</strong>
         </div>
       </section>
+      <input
+        id="image-file-input"
+        class="sr-only"
+        type="file"
+        accept=".apng,.avif,.gif,.jpeg,.jpg,.png,.svg,.webp,image/*"
+        multiple
+        hidden
+      />
+      <div id="image-drop-overlay" class="image-drop-overlay" role="status" hidden>
+        <div class="image-drop-message">
+          ${icon("imagePlus", "drop-icon")}
+          <strong>松开以导入图片</strong>
+        </div>
+      </div>
 
       <button id="inspector-scrim" class="inspector-scrim" type="button" aria-label="关闭详情面板" hidden></button>
       <aside id="inspector" class="inspector" aria-labelledby="inspector-title" hidden>
@@ -161,23 +195,6 @@ appRoot.innerHTML = `
     </main>
   </div>
 
-  <dialog id="import-dialog" class="dialog">
-    <form id="import-form" method="dialog">
-      <div class="dialog-header">
-        <h2>导入图片</h2>
-        <button class="icon-button" value="cancel" aria-label="关闭导入窗口" type="submit">${icon("x")}</button>
-      </div>
-      <label for="import-path">项目内图片路径</label>
-      <input id="import-path" name="path" type="text" required autocomplete="off" />
-      <label for="import-title">图卡标题</label>
-      <input id="import-title" name="title" type="text" maxlength="200" autocomplete="off" />
-      <div class="dialog-actions">
-        <button class="secondary-button" value="cancel" type="submit">取消</button>
-        <button class="primary-button" id="import-submit" value="default" type="submit">${icon("import")}导入</button>
-      </div>
-    </form>
-  </dialog>
-
   <div id="toast-region" class="toast-region" role="status" aria-live="polite" aria-atomic="true"></div>
 `;
 
@@ -191,11 +208,12 @@ const boardTitleInput =
   document.querySelector<HTMLInputElement>("#board-title")!;
 const saveState = document.querySelector<HTMLSpanElement>("#save-state")!;
 const toastRegion = document.querySelector<HTMLDivElement>("#toast-region")!;
-const importDialog =
-  document.querySelector<HTMLDialogElement>("#import-dialog")!;
-const importForm = document.querySelector<HTMLFormElement>("#import-form")!;
-const importPath = document.querySelector<HTMLInputElement>("#import-path")!;
-const importTitle = document.querySelector<HTMLInputElement>("#import-title")!;
+const importButton =
+  document.querySelector<HTMLButtonElement>("#import-button")!;
+const imageFileInput =
+  document.querySelector<HTMLInputElement>("#image-file-input")!;
+const imageDropOverlay =
+  document.querySelector<HTMLDivElement>("#image-drop-overlay")!;
 const panelButton = document.querySelector<HTMLButtonElement>("#panel-button")!;
 const inspectorClose =
   document.querySelector<HTMLButtonElement>("#inspector-close")!;
@@ -214,6 +232,8 @@ let persistedRevision = 0;
 let refreshAfterSave = false;
 let pollTimer: number | undefined;
 let panelOpen = false;
+let importInFlight = false;
+let fileDragDepth = 0;
 const assetCache = new Map<string, string>();
 let assetObserver: IntersectionObserver | null = null;
 
@@ -944,6 +964,147 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function fileExtension(fileName: string): string {
+  const extension = fileName.split(".").pop()?.toLowerCase() ?? "";
+  return fileName.includes(".") ? extension : "";
+}
+
+function isSupportedImage(file: File): boolean {
+  return (
+    SUPPORTED_IMAGE_TYPES.has(file.type.toLowerCase()) ||
+    SUPPORTED_IMAGE_EXTENSIONS.has(fileExtension(file.name))
+  );
+}
+
+function titleFromFileName(fileName: string): string {
+  const extension = fileExtension(fileName);
+  return extension ? fileName.slice(0, -(extension.length + 1)) : fileName;
+}
+
+function readFileAsBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error ?? new Error("无法读取图片"));
+    reader.onload = () => {
+      const result = reader.result;
+      if (typeof result !== "string") {
+        reject(new Error("无法读取图片"));
+        return;
+      }
+      const separator = result.indexOf(",");
+      if (separator < 0) {
+        reject(new Error("无法读取图片"));
+        return;
+      }
+      resolve(result.slice(separator + 1));
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function setImportBusy(busy: boolean): void {
+  importInFlight = busy;
+  importButton.disabled = busy;
+  imageFileInput.disabled = busy;
+  importButton.innerHTML = icon(
+    busy ? "loading" : "import",
+    busy ? "spin" : "icon",
+  );
+  importButton.ariaLabel = busy ? "正在导入图片" : "选择图片";
+  importButton.title = importButton.ariaLabel;
+}
+
+async function importImageFiles(fileList: FileList | File[]): Promise<void> {
+  if (importInFlight) {
+    showToast("图片正在导入");
+    return;
+  }
+  if (!board) {
+    showToast("画板尚未加载", true);
+    return;
+  }
+
+  const files = Array.from(fileList);
+  const supported = files.filter(isSupportedImage);
+  const oversized = supported.filter(
+    (file) => file.size > MAX_IMPORT_FILE_BYTES,
+  );
+  const importable = supported.filter(
+    (file) => file.size <= MAX_IMPORT_FILE_BYTES,
+  );
+
+  if (!importable.length) {
+    const message = oversized.length
+      ? "图片需小于 20 MB"
+      : "请选择 PNG、JPG、WebP、GIF、AVIF 或 SVG 图片";
+    showToast(message, true);
+    return;
+  }
+
+  const parentNodeId = selectedNodeId;
+  const failures: string[] = [];
+  let imported = 0;
+  let latestBoard = board;
+  let latestNodeId = selectedNodeId;
+
+  setImportBusy(true);
+  showToast(
+    importable.length === 1
+      ? `正在导入 ${importable[0]!.name}`
+      : `正在导入 ${importable.length} 张图片`,
+  );
+
+  try {
+    await flushSave();
+    for (const file of importable) {
+      try {
+        const result = await bridge.callTool<{ board: Board; nodeId: string }>(
+          "mindart_import_image",
+          {
+            board_id: latestBoard.id,
+            image_data: await readFileAsBase64(file),
+            file_name: file.name,
+            ...(file.type ? { mime_type: file.type } : {}),
+            ...(parentNodeId ? { parent_node_id: parentNodeId } : {}),
+            title: titleFromFileName(file.name) || "素材图",
+          },
+        );
+        latestBoard = result.board;
+        latestNodeId = result.nodeId;
+        imported += 1;
+      } catch (error) {
+        failures.push(`${file.name}：${errorMessage(error)}`);
+      }
+    }
+
+    if (imported) {
+      selectedNodeId = latestNodeId;
+      renderBoard(latestBoard);
+    }
+
+    const skipped = files.length - importable.length;
+    if (failures.length || skipped) {
+      const detail = failures[0] ?? `${skipped} 个文件格式不受支持或超过 20 MB`;
+      showToast(
+        imported ? `已导入 ${imported} 张；${detail}` : detail,
+        true,
+      );
+    } else {
+      showToast(
+        imported === 1 ? `已导入 ${importable[0]!.name}` : `已导入 ${imported} 张图片`,
+      );
+    }
+  } finally {
+    setImportBusy(false);
+  }
+}
+
+function dragContainsFiles(event: DragEvent): boolean {
+  return Array.from(event.dataTransfer?.items ?? []).some(
+    (item) => item.kind === "file",
+  );
+}
+
 function demoBoard(): Board {
   return {
     version: 1,
@@ -1061,10 +1222,49 @@ document.querySelector("#fit-button")?.addEventListener("click", () => {
 document.querySelector("#fullscreen-button")?.addEventListener("click", () => {
   void bridge.toggleFullscreen().catch((error) => showToast(errorMessage(error), true));
 });
-document.querySelector("#import-button")?.addEventListener("click", () => {
-  importDialog.showModal();
-  window.setTimeout(() => importPath.focus(), 0);
+importButton.addEventListener("click", () => {
+  imageFileInput.value = "";
+  imageFileInput.click();
 });
+imageFileInput.addEventListener("change", () => {
+  if (imageFileInput.files?.length) {
+    void importImageFiles(imageFileInput.files);
+  }
+});
+
+window.addEventListener("dragenter", (event) => {
+  if (!dragContainsFiles(event)) return;
+  event.preventDefault();
+  fileDragDepth += 1;
+  imageDropOverlay.hidden = false;
+});
+window.addEventListener("dragover", (event) => {
+  if (!dragContainsFiles(event)) return;
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+});
+window.addEventListener("dragleave", () => {
+  if (!fileDragDepth) return;
+  fileDragDepth = Math.max(0, fileDragDepth - 1);
+  if (!fileDragDepth) imageDropOverlay.hidden = true;
+});
+window.addEventListener("drop", (event) => {
+  const files = event.dataTransfer?.files;
+  if (!files?.length) return;
+  event.preventDefault();
+  fileDragDepth = 0;
+  imageDropOverlay.hidden = true;
+  void importImageFiles(files);
+});
+window.addEventListener("paste", (event) => {
+  const files = Array.from(event.clipboardData?.files ?? []).filter(
+    isSupportedImage,
+  );
+  if (!files.length) return;
+  event.preventDefault();
+  void importImageFiles(files);
+});
+
 function setPanelOpen(open: boolean): void {
   panelOpen = open;
   inspector.hidden = !open;
@@ -1079,37 +1279,6 @@ panelButton.addEventListener("click", () => {
 });
 inspectorClose.addEventListener("click", () => setPanelOpen(false));
 inspectorScrim.addEventListener("click", () => setPanelOpen(false));
-
-importForm.addEventListener("submit", (event) => {
-  const submitter = (event as SubmitEvent).submitter as HTMLButtonElement | null;
-  if (submitter?.value !== "default") return;
-  event.preventDefault();
-  if (!board || !importPath.reportValidity()) return;
-  void (async () => {
-    try {
-      await flushSave();
-      if (!board) return;
-      const result = await bridge.callTool<{ board: Board; nodeId: string }>(
-        "mindart_import_image",
-        {
-          board_id: board.id,
-          source_path: importPath.value,
-          ...(selectedNodeId ? { parent_node_id: selectedNodeId } : {}),
-          ...(importTitle.value.trim() ? { title: importTitle.value.trim() } : {}),
-        },
-      );
-      importDialog.close();
-      importForm.reset();
-      selectedNodeId = result.nodeId;
-      renderBoard(result.board);
-      showToast("图片已导入");
-    } catch (error) {
-      showToast(errorMessage(error), true);
-      importPath.setAttribute("aria-invalid", "true");
-      importPath.focus();
-    }
-  })();
-});
 
 bridge.onResult = (payload: StructuredResult) => {
   const nextBoard = payload.board;

@@ -9,7 +9,10 @@ import {
   BoardSchema,
   GenerationRequestInputSchema,
 } from "./model.js";
-import { MindArtStore } from "./store.js";
+import {
+  MAX_IMPORT_IMAGE_BASE64_LENGTH,
+  MindArtStore,
+} from "./store.js";
 
 export const CANVAS_RESOURCE_URI = "ui://mindart/canvas.html";
 
@@ -213,10 +216,18 @@ export function registerMindArtTools(
     {
       title: "Import Image Into MindArt",
       description:
-        "Import a local project image into a MindArt board as a ready image card. The image is copied into the board assets directory.",
+        "Import an uploaded image or local project image into a MindArt board as a ready image card. Provide image_data with file_name, or provide source_path.",
       inputSchema: z.object({
         board_id: BoardIdSchema.optional(),
-        source_path: z.string().trim().min(1),
+        source_path: z.string().trim().min(1).optional(),
+        image_data: z
+          .string()
+          .trim()
+          .min(1)
+          .max(MAX_IMPORT_IMAGE_BASE64_LENGTH)
+          .optional(),
+        file_name: z.string().trim().min(1).max(255).optional(),
+        mime_type: z.string().trim().min(1).max(100).optional(),
         parent_node_id: z.string().trim().min(1).optional(),
         title: z.string().trim().min(1).max(200).optional(),
       }),
@@ -226,10 +237,27 @@ export function registerMindArtTools(
       }),
       _meta: { ui: { resourceUri: CANVAS_RESOURCE_URI } },
     },
-    async ({ board_id, source_path, parent_node_id, title }) => {
+    async ({
+      board_id,
+      source_path,
+      image_data,
+      file_name,
+      mime_type,
+      parent_node_id,
+      title,
+    }) => {
+      if (Boolean(source_path) === Boolean(image_data)) {
+        throw new Error("Provide either image_data or source_path");
+      }
+      if (image_data && !file_name) {
+        throw new Error("file_name is required with image_data");
+      }
       const result = await store.importImage({
         ...(board_id === undefined ? {} : { boardId: board_id }),
-        sourcePath: source_path,
+        ...(source_path === undefined ? {} : { sourcePath: source_path }),
+        ...(image_data === undefined ? {} : { imageData: image_data }),
+        ...(file_name === undefined ? {} : { fileName: file_name }),
+        ...(mime_type === undefined ? {} : { mimeType: mime_type }),
         ...(parent_node_id === undefined
           ? {}
           : { parentNodeId: parent_node_id }),

@@ -76,6 +76,31 @@ describe("MCP server", () => {
         board: { id: "board-protocol", title: "Protocol" },
       });
 
+      const imported = await client.callTool({
+        name: "mindart_import_image",
+        arguments: {
+          board_id: "board-protocol",
+          image_data:
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=",
+          file_name: "upload.png",
+          mime_type: "image/png",
+        },
+      });
+      expect(imported.isError).toBeFalsy();
+      expect(imported.structuredContent).toMatchObject({
+        board: {
+          id: "board-protocol",
+          root: {
+            children: [
+              {
+                title: "upload",
+                status: "ready",
+              },
+            ],
+          },
+        },
+      });
+
       const resource = await client.readResource({
         uri: CANVAS_RESOURCE_URI,
       });

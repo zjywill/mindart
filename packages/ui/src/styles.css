@@ -423,8 +423,7 @@ button:disabled {
   gap: 7px;
 }
 
-.field-group label,
-.dialog label {
+.field-group label {
   color: var(--mindart-muted);
   font-size: 0.75rem;
   font-weight: 600;
@@ -432,7 +431,6 @@ button:disabled {
 
 .field-group input,
 .field-group textarea,
-.dialog input,
 .reference-item input {
   width: 100%;
   min-width: 0;
@@ -449,7 +447,6 @@ button:disabled {
 
 .field-group input:hover,
 .field-group textarea:hover,
-.dialog input:hover,
 .reference-item input:hover {
   border-color: var(--mindart-border-strong);
 }
@@ -468,8 +465,6 @@ button:disabled {
 .section-heading,
 .disclosure-button,
 .reference-name,
-.dialog-header,
-.dialog-actions,
 .board-meta {
   display: flex;
   align-items: center;
@@ -1175,41 +1170,48 @@ me-epd {
   box-shadow: 0 4px 12px var(--mindart-shadow);
 }
 
-.dialog {
-  width: min(440px, calc(100% - 32px));
-  padding: 0;
-  color: var(--mindart-text);
-  background: var(--mindart-surface);
-  border: 1px solid var(--mindart-border);
-  border-radius: 8px;
-  box-shadow: 0 28px 90px var(--mindart-shadow);
-}
-
-.dialog::backdrop {
-  background: oklch(0.05 0.005 255 / 0.64);
-  backdrop-filter: blur(3px);
-}
-
-.dialog form {
+.image-drop-overlay {
+  position: absolute;
+  z-index: 70;
+  inset: 10px;
   display: grid;
-  gap: 10px;
-  padding: 18px;
+  padding: 24px;
+  color: var(--mindart-text);
+  background: color-mix(in oklch, var(--mindart-canvas) 86%, transparent);
+  border: 2px dashed var(--mindart-accent);
+  border-radius: 8px;
+  box-shadow:
+    inset 0 0 0 1px color-mix(in oklch, var(--mindart-accent) 24%, transparent),
+    0 24px 72px var(--mindart-shadow);
+  backdrop-filter: blur(12px);
+  place-items: center;
+  pointer-events: none;
 }
 
-.dialog-header {
-  justify-content: space-between;
-  margin-block-end: 8px;
+.image-drop-message {
+  display: grid;
+  min-width: min(280px, 80vw);
+  min-height: 152px;
+  padding: 28px;
+  color: var(--mindart-text);
+  text-align: center;
+  background: var(--mindart-surface);
+  border: 1px solid var(--mindart-border-strong);
+  border-radius: 8px;
+  box-shadow: 0 18px 54px var(--mindart-shadow);
+  place-items: center;
 }
 
-.dialog-header h2 {
-  margin: 0;
-  font-size: 1rem;
-}
-
-.dialog-actions {
-  justify-content: flex-end;
-  gap: 8px;
+.image-drop-message strong {
   margin-block-start: 12px;
+  font-size: 0.9375rem;
+}
+
+.drop-icon {
+  width: 30px;
+  height: 30px;
+  color: var(--mindart-accent);
+  stroke-width: 1.5;
 }
 
 .toast-region {
@@ -1335,7 +1337,6 @@ me-epd {
 
   .field-group input,
   .field-group textarea,
-  .dialog input,
   .reference-item input,
   .card-prompt {
     font-size: 1rem;

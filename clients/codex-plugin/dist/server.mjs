@@ -20229,8 +20229,33 @@ var MIME_TYPES = {
 	".svg": "image/svg+xml",
 	".webp": "image/webp"
 };
+var EXTENSION_BY_MIME_TYPE = {
+	"image/apng": ".apng",
+	"image/avif": ".avif",
+	"image/gif": ".gif",
+	"image/jpeg": ".jpg",
+	"image/png": ".png",
+	"image/svg+xml": ".svg",
+	"image/webp": ".webp"
+};
+var MAX_IMPORT_IMAGE_BASE64_LENGTH = Math.ceil(20971520 / 3) * 4;
 function safeFileStem(value) {
 	return value.normalize("NFKD").replace(/[^\w.-]+/gu, "-").replace(/^-+|-+$/gu, "") || "image";
+}
+function resolveImageExtension(fileName, mimeType) {
+	const fileExtension = path.extname(fileName).toLowerCase();
+	if (IMAGE_EXTENSIONS.has(fileExtension)) return fileExtension;
+	const mimeExtension = mimeType ? EXTENSION_BY_MIME_TYPE[mimeType.toLowerCase()] : void 0;
+	if (mimeExtension) return mimeExtension;
+	throw new Error(`Unsupported image type: ${fileExtension || mimeType || "(none)"}`);
+}
+function decodeImageData(data) {
+	const normalized = data.replace(/\s+/gu, "");
+	if (!normalized || normalized.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/u.test(normalized)) throw new Error("Image data must be valid base64");
+	const contents = Buffer.from(normalized, "base64");
+	if (!contents.length) throw new Error("Image file is empty");
+	if (contents.length > 20971520) throw new Error("Image file must be 20 MB or smaller");
+	return contents;
 }
 function clone(value) {
 	return structuredClone(value);
@@ -20423,15 +20448,31 @@ var MindArtStore = class {
 		});
 	}
 	async importImage(options) {
-		const sourcePath = await this.resolveInputImage(options.sourcePath);
+		const hasSourcePath = Boolean(options.sourcePath?.trim());
+		if (hasSourcePath === Boolean(options.imageData?.trim())) throw new Error("Provide either an image file or a source path");
+		let sourcePath;
+		let imageData;
+		let sourceName;
+		let extension;
+		if (hasSourcePath) {
+			sourcePath = await this.resolveInputImage(options.sourcePath);
+			sourceName = path.basename(sourcePath);
+			extension = path.extname(sourcePath).toLowerCase();
+		} else {
+			sourceName = options.fileName?.trim() ?? "";
+			if (!sourceName) throw new Error("Image file name is required");
+			extension = resolveImageExtension(sourceName, options.mimeType);
+			imageData = decodeImageData(options.imageData);
+		}
 		const board = await this.openBoard(options.boardId);
-		const extension = path.extname(sourcePath).toLowerCase();
 		const nodeId = `node-${randomUUID().slice(0, 10)}`;
-		const assetName = `${safeFileStem(options.title ?? path.basename(sourcePath, extension))}-${randomUUID().slice(0, 6)}${extension}`;
+		const defaultTitle = path.basename(sourceName, path.extname(sourceName));
+		const assetName = `${safeFileStem(options.title ?? defaultTitle)}-${randomUUID().slice(0, 6)}${extension}`;
 		const relativeAsset = path.posix.join("assets", assetName);
 		const destination = path.join(this.boardDirectory(board.id), relativeAsset);
 		await mkdir(path.dirname(destination), { recursive: true });
-		await copyFile(sourcePath, destination);
+		if (sourcePath) await copyFile(sourcePath, destination);
+		else await writeFile(destination, imageData);
 		return {
 			board: await this.mutateBoard(board.id, (draft) => {
 				const nodes = flattenBoard(draft.root);
@@ -20439,7 +20480,7 @@ var MindArtStore = class {
 				if (!parent) throw new Error(`Parent node not found: ${options.parentNodeId}`);
 				parent.children.push({
 					id: nodeId,
-					title: options.title?.trim() || path.basename(sourcePath, extension) || "素材图",
+					title: options.title?.trim() || defaultTitle || "素材图",
 					status: "ready",
 					asset: relativeAsset,
 					expanded: true,
@@ -20990,10 +21031,13 @@ function registerMindArtTools(server, initialStore) {
 	});
 	K3(server, "mindart_import_image", {
 		title: "Import Image Into MindArt",
-		description: "Import a local project image into a MindArt board as a ready image card. The image is copied into the board assets directory.",
+		description: "Import an uploaded image or local project image into a MindArt board as a ready image card. Provide image_data with file_name, or provide source_path.",
 		inputSchema: object$1({
 			board_id: BoardIdSchema.optional(),
-			source_path: string().trim().min(1),
+			source_path: string().trim().min(1).optional(),
+			image_data: string().trim().min(1).max(MAX_IMPORT_IMAGE_BASE64_LENGTH).optional(),
+			file_name: string().trim().min(1).max(255).optional(),
+			mime_type: string().trim().min(1).max(100).optional(),
 			parent_node_id: string().trim().min(1).optional(),
 			title: string().trim().min(1).max(200).optional()
 		}),
@@ -21002,10 +21046,15 @@ function registerMindArtTools(server, initialStore) {
 			nodeId: string()
 		}),
 		_meta: { ui: { resourceUri: CANVAS_RESOURCE_URI } }
-	}, async ({ board_id, source_path, parent_node_id, title }) => {
+	}, async ({ board_id, source_path, image_data, file_name, mime_type, parent_node_id, title }) => {
+		if (Boolean(source_path) === Boolean(image_data)) throw new Error("Provide either image_data or source_path");
+		if (image_data && !file_name) throw new Error("file_name is required with image_data");
 		const result = await store.importImage({
 			...board_id === void 0 ? {} : { boardId: board_id },
-			sourcePath: source_path,
+			...source_path === void 0 ? {} : { sourcePath: source_path },
+			...image_data === void 0 ? {} : { imageData: image_data },
+			...file_name === void 0 ? {} : { fileName: file_name },
+			...mime_type === void 0 ? {} : { mimeType: mime_type },
 			...parent_node_id === void 0 ? {} : { parentNodeId: parent_node_id },
 			...title === void 0 ? {} : { title }
 		});
