@@ -6,4 +6,28 @@
 
 - 协议：MCP + MCP Apps 官方扩展（`ui://` 交互式界面）
 - 宿主：Codex（CLI / VS Code / App）、Claude（Code / Desktop / claude.ai）
-- 状态：规划阶段 — 完整方案见 [PLAN.md](PLAN.md)
+- 状态：MVP 已实现；完整方案见 [PLAN.md](PLAN.md)，协议验证记录见 [docs/m0-report.md](docs/m0-report.md)
+
+## 本地开发
+
+要求 Node.js 20 或更高版本，并启用 Corepack：
+
+```bash
+corepack pnpm install
+corepack pnpm quality
+```
+
+开发构建完成后，MCP stdio 服务入口为：
+
+```bash
+node packages/server/dist/index.js
+```
+
+默认数据保存在当前项目的 `mindart/<board-id>/`。可通过 `MINDART_PROJECT_DIR`
+或 `mindart_open_canvas(project_dir=...)` 显式指定项目目录。
+
+## 插件目录
+
+- Codex：`clients/codex-plugin`
+- Claude Code：`clients/claude-plugin`
+- Claude marketplace：`.claude-plugin/marketplace.json`

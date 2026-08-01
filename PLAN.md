@@ -1,6 +1,6 @@
 # MindArt — 思维导图式 AI 图像生成插件 · 技术方案
 
-> 状态：规划阶段（不含实现）
+> 状态：MVP 已实现（自动化验证完成；真实宿主矩阵待手工验收）
 > 目标宿主：Codex（CLI / VS Code / Codex App）与 Claude（Claude Code / Claude Desktop / claude.ai）
 > 协议基座：MCP + MCP Apps 官方扩展（`io.modelcontextprotocol/ui`，spec 版本 2026-01-26）
 

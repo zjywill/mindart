@@ -1,0 +1,37 @@
+{
+  "name": "mindart",
+  "version": "0.1.0",
+  "description": "A project-local image genealogy canvas for combining reference images and prompts through MCP Apps.",
+  "author": {
+    "name": "MindArt Contributors",
+    "url": "https://github.com/zjywill/mindart"
+  },
+  "homepage": "https://github.com/zjywill/mindart",
+  "repository": "https://github.com/zjywill/mindart",
+  "keywords": [
+    "mind-map",
+    "image-generation",
+    "mcp-apps",
+    "creative-workflow"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "MindArt",
+    "shortDescription": "Build traceable image generations on a mind-map canvas.",
+    "longDescription": "MindArt organizes imported and generated images as a project-local genealogy tree. Combine a parent image with up to four cross-branch references, describe what to reuse from each image, and send the compiled image-plus-text request to the host model.",
+    "developerName": "MindArt Contributors",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive image canvas",
+      "Project-local persistence",
+      "Reference-image compilation",
+      "Generation history"
+    ],
+    "websiteURL": "https://github.com/zjywill/mindart",
+    "defaultPrompt": [
+      "Open the MindArt canvas for this project."
+    ],
+    "brandColor": "#087F72"
+  }
+}

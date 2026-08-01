@@ -1,0 +1,9 @@
+node_modules/
+packages/*/dist/
+packages/*/coverage/
+.corepack/
+.DS_Store
+*.log
+
+# Runtime thumbnail caches are regenerated from the original assets.
+mindart/*/assets/.thumbs/

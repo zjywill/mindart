@@ -1,0 +1,4 @@
+interface:
+  display_name: "MindArt"
+  short_description: "Open the image genealogy canvas and apply generated results"
+  default_prompt: "Open the MindArt canvas for this project."

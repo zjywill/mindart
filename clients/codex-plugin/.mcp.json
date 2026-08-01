@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "mindart": {
+      "title": "MindArt Canvas",
+      "description": "Open and persist the native MindArt image genealogy canvas.",
+      "command": "node",
+      "args": [
+        "./scripts/start-mcp.mjs"
+      ],
+      "cwd": "."
+    }
+  }
+}

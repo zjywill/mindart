@@ -1,0 +1,17 @@
+{
+  "name": "mindart",
+  "owner": {
+    "name": "MindArt Contributors"
+  },
+  "plugins": [
+    {
+      "name": "mindart",
+      "source": "./clients/claude-plugin",
+      "description": "Mind-map style AI image generation with project-local genealogy.",
+      "version": "0.1.0",
+      "author": {
+        "name": "MindArt Contributors"
+      }
+    }
+  ]
+}

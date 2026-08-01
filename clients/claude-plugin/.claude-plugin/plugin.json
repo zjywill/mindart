@@ -1,0 +1,9 @@
+{
+  "name": "mindart",
+  "version": "0.1.0",
+  "description": "A project-local image genealogy canvas for combining reference images and prompts through MCP Apps.",
+  "author": {
+    "name": "MindArt Contributors"
+  },
+  "repository": "https://github.com/zjywill/mindart"
+}
