@@ -20,7 +20,7 @@ MindArt 是一个 **XMind 式思维导图组织 AI 图像生成** 的 MCP 插件
 
 | 产品 | 形态 | 与 MindArt 的关系 |
 |---|---|---|
-| [Cowart](https://github.com/zhongerxin/Cowart) | Codex 原生插件，tldraw 无限画布，AI 图像帧/标注改图/AI Slides | 最接近的工程参照：证明了「Codex 插件 + MCP widget + 项目目录持久化」这条路走得通。但它是**自由画布**（框选、标注），不是**图结构**（节点 + 连线 + 谱系） |
+| [Cowart](https://github.com/zhongerxin/Cowart) | Codex 原生插件，tldraw 无限画布，AI 图像帧/标注改图/AI Slides | 最接近的工程参照：证明了「Codex 插件 + MCP widget + 项目目录持久化」这条路走得通。但它是**自由画布**（框选、标注），不是**图结构**（节点 + 连线 + 谱系）。另一个教训（用户实测反馈）：它暴露多个 skills（open/image-gen/image-edit），用户实际只用 open，其余不知何用——MindArt 因此确立单一入口原则（§4.5） |
 | 截图中的节点式生成（即梦/LiblibAI 类工作流画布） | Web 产品内置节点编辑器 | 产品交互参照与 UI 基准（§4.2）：多图汇聚到生成卡，提示词里用「图1/图2」引用参考图。MindArt 把这种交互搬进 Codex/Claude，让宿主模型代替其后端生成服务 |
 | ComfyUI | 节点式工作流引擎 | 反面参照：MindArt 不做算子级工作流（不暴露采样器/ControlNet 等），节点粒度停在「图卡」一层，保持思维导图的轻量心智 |
 
@@ -139,6 +139,15 @@ UI         ：收到 tool-result / 资源变更通知，该图卡原位显示产
 做：XMind 式树形导图（自动布局、Tab/Enter/Delete、拖拽调整挂载、折叠展开）、统一图卡（状态机 draft→queued→generating→ready/error）、关联线 + 标签（≤4 条/卡）、族谱高亮（选中卡高亮父链与参考来源）、大图预览（fullscreen display mode）、画板级风格设定、多画板。
 不做（明确砍掉）：文字节点、自由摆放/自由绘制/标注（Cowart 已有）、算子级工作流、协同编辑、云端同步。
 
+### 4.5 入口与用户心智：单一入口原则
+
+来自 Cowart 的实测教训：插件暴露多个 skills，用户只用得到 open，其余全是心智负担。MindArt 的硬性规则：
+
+- **用户只需要记一件事：打开画板**（`/mindart`，或对模型说"打开画板"）。这是唯一的用户可见 skill / 命令，永远不加第二个；
+- **其余一切都是画布内交互**：导入素材、写提示词、拉参考、生成、看历史、重试——全部在 UI 里点/拖/输完成，不存在"要记住去调某个命令"的路径；
+- **生成闭环不依赖第二个 skill**：§4.3 的编译模板自带完整行动指令（"产出要求：调 mindart_apply_result 回填"），配合工具自身的 description 就足够驱动宿主模型。唯一 skill 里只额外写"环境差异兜底"（如何探测生图能力、找不到时怎么提示用户），不再拆出独立的 generate skill；
+- **模型可见的工具面同样克制**（§7）：对模型只暴露 4 个工具（open/get_board/apply_result/report_error + import），其余全部 app-only，模型的工具列表不被撑爆，用户在权限确认里看到的条目也少。
+
 ## 5. 技术架构
 
 ```
@@ -248,7 +257,7 @@ mindart/
 | `mindart_import_image(source_path)` | model + app | 把项目里的图导入 assets 并建节点（用户对模型说"把 logo.png 放进画布"） |
 | `generate_image_direct(request)` | app-only（M3） | 通道 B：server 直连生图 API |
 
-配套 **skill**（两端各一份，内容同源）：`mindart-generate` —— 教宿主模型「看到 mindart 生成请求时：读参考图 → 生成图片写入 board assets 目录 → 调 `mindart_apply_result` 回填，不要把图贴在对话里了事」。这是保证通道 A 稳定闭环的关键（Cowart 同款手法）。
+配套 **skill 只有一个**（两端同源，遵守 §4.5 单一入口原则）：`mindart` —— 触发词是"打开画板/mindart"，内容包含：① 调 `mindart_open_canvas`；② 附带生成请求的处理规范（读参考图 → 生成写入 assets → 调 `mindart_apply_result` 回填，不要把图贴在对话里）与生图能力探测兜底。生成时的逐步指令主要由编译模板内联携带（§4.3），skill 只兜环境差异，因此即使 skill 未被触发，闭环仍然成立。
 
 ## 8. 双端插件封装
 
@@ -352,26 +361,33 @@ board 路径：`$MINDART_ROOT/mindart/<board-id>/board.json` + `assets/`；缩�
 | mind-elixir `dangerouslySetInnerHTML` 内的输入框焦点/快捷键冲突 | M1 选型验证 | 编辑交互移到侧边抽屉，卡上只读 |
 | Claude Desktop iframe 渲染 bug（ext-apps#671） | M0 实测 | 该端标记"暂不支持"，主打 Claude Code + claude.ai + Codex |
 
-### 12.5 skill 草稿（`mindart-generate`，两端同源）
+### 12.5 skill 草稿（唯一 skill：`mindart`，两端同源）
+
+> 硬性规则（§4.5）：全插件只有这一个用户可见 skill，不要拆分出 generate/edit 等第二入口。
 
 ```markdown
 ---
-name: mindart-generate
-description: 处理 MindArt 画板发来的图像生成请求：读取参考图，生成图片，回填画板。
-  当对话中出现「MindArt 生成请求 req-…」或用户要求为画板出图时使用。
+name: mindart
+description: 打开 MindArt 图像画板（思维导图式 AI 出图）。用户说"打开画板 / mindart /
+  继续画图"时使用；对话中出现「MindArt 生成请求 req-…」时按下方规范处理。
 ---
-收到 MindArt 生成请求时，严格按以下步骤执行，不要把图片贴在对话里了事：
-1. 请求中列出了结合指令、参考图路径（≤5 张，各带取用说明）。用多模态能力读取全部参考图。
+## 打开画板
+调用 mindart_open_canvas(board_id?)。用户没指定画板时用默认画板。
+
+## 处理生成请求（画板会通过消息把请求发进对话）
+请求自带结合指令、参考图路径（≤5 张，各带取用说明）和产出要求，严格照做：
+1. 用多模态能力读取全部参考图。
 2. 生成图片。优先顺序：宿主内置图像生成 → 环境中可用的生图 MCP 工具 → 均不可用时，
-   调 mindart_report_error(request_id, "no image generation capability")并告知用户接入方式。
+   调 mindart_report_error(request_id, "no image generation capability") 并告知用户接入方式。
 3. 将产出写入该画板目录 assets/（文件名 gen-<request_id>.png）。
 4. 调用 mindart_apply_result(request_id, image_path) 回填。失败调 mindart_report_error。
-5. 回复用户一句话结论即可，无需描述图片细节（画板会直接展示）。
+5. 回复用户一句话结论即可，不要把图片贴在对话里（画板会直接展示）。
 ```
 
 ### 12.6 明确不要做的事（防实施跑偏）
 
 - 不要引入 React/Vue 重框架包住 mind-elixir（单文件体积敏感，vanilla TS + mind-elixir 足够）；
 - 不要在 M2 前碰通道 B（直连生图 API）；
+- 不要新增第二个用户可见 skill / 命令（单一入口原则，§4.5）；
 - 不要自研树布局/快捷键系统（那等于放弃选型结论）；
 - 不要把图片 base64 内联进 board.json 或 HTML（走 assets 文件 + 按需读取）。
