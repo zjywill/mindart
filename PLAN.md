@@ -42,21 +42,30 @@ MindArt 是一个以 **节点画布（思维导图式）** 组织 AI 图像生�
 
 ## 4. 产品设计
 
+> **交互范式定调：XMind 式结构化思维导图，不做自由画布。** 用户不在画布上随意摆放——所有节点都挂在树上，自动布局；键盘驱动（Tab 加子节点、Enter 加兄弟节点、拖拽只用于调整挂载位置）；跨分支的参考关系用 XMind 的「关联线」表达。这样心智负担最小，操作有成熟范式可抄，而且**迭代谱系天然就是分支深度**（一张图反复改，就是一条不断加深的分支）。
+
+### 4.0 结构模型：树 + 关联线
+
+- **主结构是一棵树**（单根，根节点 = 画板主题，如"角色设计"）。分支用于组织：素材区、方向 A、方向 B……
+- **迭代 = 纵向生长**：在图片节点下 Tab 出生成节点 → 产出图作为生成节点的子节点 → 再在产出图下继续 Tab 迭代。祖先链就是完整的创作谱系，无需额外画线。
+- **跨分支参考 = 关联线**：生成节点默认以「最近的图片祖先」为图1；需要引用其它分支的图（如另一个角色的配色）时，从那张图拉一条带标签的关联线到生成节点，成为图2、图3。这正是 XMind 关联线的标准用法，SimpleMindMap 原生支持。
+
 ### 4.1 节点类型（刻意保持 3 类）
 
 | 节点 | 内容 | 来源 |
 |---|---|---|
-| **图片节点** | 一张图 + 可选标题/备注 | 用户拖入/粘贴/从项目文件导入，或由生成节点产出 |
-| **文本节点** | 提示词片段（风格、构图、配色约束等），可复用 | 用户输入，或让宿主模型帮写 |
-| **生成节点** | 提示词输入框 + 参考图槽位 + 生成状态 + 产出图 | 用户创建；完成后其产出可"固化"为图片节点继续连线 |
+| **图片节点** | 一张图 + 可选标题/备注 | 用户粘贴/从项目文件导入，或由生成节点产出（自动挂为其子节点） |
+| **文本节点** | 提示词片段（风格、构图、配色约束等） | 用户输入，或让宿主模型帮写；作为生成节点的兄弟/祖先参与编译 |
+| **生成节点** | 提示词输入框 + 参考角标（图1/图2）+ 状态 + 产出缩略图 | 在图片节点下 Tab 创建 |
 
-连线只有一种语义：**「作为参考输入」**（上游 → 生成节点）。连线可加标签（如"体型"、"配色"），标签会被编译进提示词（"参考图1的体型"）。生成节点产出后自动与产出图之间保留"派生"关系，构成谱系。
+参考来源两类：**祖先链**（沿树向上收集最近的图片/文本节点，隐式、免操作）+ **关联线**（跨分支显式引用，可加标签如"配色"）。标签被编译进提示词（"参考图2的配色"）。
 
 ### 4.2 核心交互流
 
 ```
-用户在画布：拖入图A、图B → 新建生成节点 → 连线（图A→生成 [标签:体型]，图B→生成 [标签:配色]）
-           → 在生成节点输入"设计一个新角色" → 点【生成】
+用户在导图：图A（归魂灯）分支下 Tab 新建生成节点 → 图A 自动成为图1
+           → 从另一分支的图B（赌翁）拉关联线到该节点 [标签:配色] → 图B 成为图2
+           → 输入"设计一个新角色，参考图1的体型，图2的配色" → 点【生成】
 UI (iframe)：把子图编译为 GenerationRequest（见 §6），通过 tools/call 调用 server 的
              `canvas_request_generation`（把请求落盘并返回请求 id），随后通过
              `ui/message` 向对话发送一条结构化请求（宿主模型可见）
@@ -85,13 +94,13 @@ UI         ：收到 tool-result / 资源变更通知，生成节点显示产出
 ```
 
 - 图片以**项目内文件路径**传递（两端宿主都能读本地文件并作为多模态输入）；
-- 编号规则 = 连线创建顺序，UI 上同步显示"图1/图2"角标，保证用户提示词里手写"图1"与实际一致；
-- 文本节点按 DAG 拓扑序拼接，位置越近的优先级越高。
+- 编号规则：图1 = 最近的图片祖先，图2 起 = 关联线按创建顺序；生成节点上实时显示"图1/图2"角标，保证用户提示词里手写"图1"与实际一致；
+- 文本节点按「祖先链自根向下 + 关联线」顺序拼接，离生成节点越近优先级越高。
 
-### 4.4 画布能力范围（MVP 收敛）
+### 4.4 能力范围（MVP 收敛）
 
-做：无限画布（缩放/平移）、三类节点、连线 + 标签、生成状态（排队/生成中/完成/失败）、谱系高亮（选中一张图，高亮其全部祖先）、图片预览大图（fullscreen display mode）、多页画布。
-不做（明确砍掉）：自由绘制/标注（Cowart 已有）、算子级工作流、协同编辑、云端同步。
+做：XMind 式树形导图（自动布局、Tab/Enter/Delete、拖拽调整挂载、折叠展开）、三类节点、关联线 + 标签、生成状态（排队/生成中/完成/失败）、谱系即分支（选中节点高亮祖先链）、图片大图预览（fullscreen display mode）、多画板。
+不做（明确砍掉）：自由摆放/自由绘制/标注（Cowart 已有）、算子级工作流、协同编辑、云端同步。
 
 ## 5. 技术架构
 
@@ -106,14 +115,13 @@ mindart/
 │   │   │   ├── store.ts         # 画布持久化（项目目录 canvas 文件 + assets）
 │   │   │   └── ui-resource.ts   # 注册 ui://mindart/canvas.html（读打包产物）
 │   │   └── package.json
-│   └── ui/                # 画布前端（React + React Flow（@xyflow/react）——
-│       │                  #  图结构/连线/minimap 开箱即用，比 tldraw 更贴合"节点+边"）
+│   └── ui/                # 导图前端（基于 simple-mind-map，见 §5.1 选型）
 │       ├── src/
-│       │   ├── App.tsx          # 画布主体
+│       │   ├── App.ts           # 导图实例、主题映射、快捷键
 │       │   ├── bridge.ts        # MCP Apps JSON-RPC 桥（ui/initialize、tools/call、
 │       │   │                    #  size-changed、theme 变量映射）
-│       │   ├── nodes/           # ImageNode / TextNode / GenerateNode
-│       │   └── compile.ts       # 子图 → GenerationRequest 编译器（§4.3）
+│       │   ├── nodes/           # 三类节点的自定义内容渲染（图片/文本/生成）
+│       │   └── compile.ts       # 祖先链+关联线 → GenerationRequest 编译器（§4.3）
 │       └── vite.config.ts       # vite-plugin-singlefile：产出单文件 HTML（inline JS/CSS）
 ├── clients/               # 三层薄壳（见 §8）
 │   ├── claude-plugin/     # .claude-plugin/plugin.json + .mcp.json + skills/
@@ -121,6 +129,16 @@ mindart/
 ├── PLAN.md
 └── README.md
 ```
+
+### 5.1 导图库选型（XMind 式操作是硬约束）
+
+| 候选 | 结论 | 理由 |
+|---|---|---|
+| **[simple-mind-map（思绪）](https://github.com/wanglin2/mind-map)** | **首选** | XMind 式完整交互（Tab/Enter、拖拽调整结构、折叠、自动布局）；节点原生支持图片；**原生关联线**（我们的跨分支参考直接复用）；节点内容可自定义 DOM 扩展（生成节点的提示词框/状态就靠它）；活跃维护、中文文档、无框架绑定 |
+| [mind-elixir](https://github.com/ssshooter/mind-elixir-core) | 备选 | 更轻量，节点为 DOM 渲染（嵌自定义控件最容易），也有 XMind 式快捷键；但关联线等高级能力弱于思绪 |
+| React Flow + elkjs 自动布局 | 兜底 | 仅当上述两者的自定义节点内容装不下"生成节点"交互时才考虑；需要自己实现全部 XMind 键盘语义，成本最高 |
+
+选型验证放在 M1 第一周：用思绪跑通「图片节点 + 自定义生成节点 + 关联线 + 单文件打包体积」四项，任一不过关即降级到备选。
 
 要点：
 
@@ -131,36 +149,48 @@ mindart/
 
 ## 6. 数据模型（board.json）
 
+树形结构（对齐 simple-mind-map 的 `{ data, children }` 递归格式，便于直接喂给导图库；MindArt 业务字段收敛在 `data.mindart` 下）：
+
 ```jsonc
 {
   "version": 1,
   "id": "board-7f3a",
-  "title": "角色设计",
-  "nodes": [
-    { "id": "n1", "type": "image", "x": 0,   "y": 0,
-      "asset": "assets/guihun-lantern.png", "title": "归魂灯完稿" },
-    { "id": "n2", "type": "image", "x": 0,   "y": 420,
-      "asset": "assets/duweng.png", "title": "赌翁完稿" },
-    { "id": "n3", "type": "text",  "x": 240, "y": 200, "text": "3D 渲染，暗色棚拍背景" },
-    { "id": "n4", "type": "generate", "x": 520, "y": 200,
-      "prompt": "设计一个新角色，参考图1的体型，图2的配色",
-      "status": "done",                      // idle | queued | generating | done | error
-      "requestId": "req-01",
-      "output": "assets/gen-01.png" }
-  ],
-  "edges": [
-    { "id": "e1", "from": "n1", "to": "n4", "label": "体型", "order": 1 },
-    { "id": "e2", "from": "n2", "to": "n4", "label": "配色", "order": 2 },
-    { "id": "e3", "from": "n3", "to": "n4", "order": 3 }
+  "root": {
+    "data": { "text": "角色设计" },
+    "children": [
+      { "data": { "text": "素材" },
+        "children": [
+          { "data": { "uid": "n1", "text": "归魂灯完稿",
+                      "mindart": { "type": "image", "asset": "assets/guihun-lantern.png" } },
+            "children": [
+              { "data": { "uid": "n4", "text": "设计一个新角色，参考图1的体型，图2的配色",
+                          "mindart": { "type": "generate",
+                                       "status": "done",   // idle|queued|generating|done|error
+                                       "requestId": "req-01" } },
+                "children": [
+                  { "data": { "uid": "n5", "text": "新角色 v1",
+                              "mindart": { "type": "image", "asset": "assets/gen-01.png",
+                                           "generatedBy": "req-01" } },
+                    "children": [] }                        // ← 继续 Tab 即可迭代 v2
+                ] }
+            ] },
+          { "data": { "uid": "n2", "text": "赌翁完稿",
+                      "mindart": { "type": "image", "asset": "assets/duweng.png" } },
+            "children": [] }
+        ] }
+    ]
+  },
+  "refLines": [                              // 跨分支参考（XMind 关联线）
+    { "id": "r1", "from": "n2", "to": "n4", "label": "配色", "order": 2 }
   ],
   "requests": {                              // 生成请求台账（谱系与断点续跑）
-    "req-01": { "nodeId": "n4", "compiledPrompt": "…", "refs": ["n1","n2"],
+    "req-01": { "nodeId": "n4", "compiledPrompt": "…", "refs": ["n1", "n2"],
                 "createdAt": "…", "resolvedAt": "…" }
   }
 }
 ```
 
-约束：边只允许指向 generate 节点；禁止环（提交连线时做 DAG 校验）；generate 节点产出可一键"固化"为新的 image 节点（保留 `derivedFrom: "n4"`）。
+约束：关联线只允许指向 generate 节点；图1 由祖先链推导、不落库（移动节点后自动重算）；生成产出自动挂为 generate 节点的子节点（谱系 = 树路径，无需 DAG 校验）。
 
 ## 7. MCP 工具面设计
 
@@ -214,7 +244,7 @@ clients/codex-plugin/
 | 阶段 | 内容 | 验收 |
 |---|---|---|
 | **M0 协议验证（1~2 天）** | 最小 MCP Apps demo：一个 `ui://` hello-canvas，在 Codex 与 Claude Desktop/Code 三端点亮，验证握手、theme、size-changed、tools/call 往返 | 三端截图 + 已知渲染 bug 清单 |
-| **M1 画布 MVP** | React Flow 三类节点 + 连线 + DAG 校验 + board.json 持久化 + `open_canvas`/`get_board`/`update_board` | 手工摆图连线，重开画布状态还原 |
+| **M1 导图 MVP** | simple-mind-map 选型验证（§5.1 四项）→ 三类节点自定义渲染 + XMind 快捷键 + 关联线 + board.json 持久化 + `open_canvas`/`get_board`/`update_board` | Tab/Enter 建树、拉关联线，重开画板状态还原 |
 | **M2 生成闭环（通道 A）** | `request_generation` → `ui/message` → skill 驱动宿主生成 → `apply_result` 回填；谱系高亮；固化为图片节点 | 复刻截图场景：两张参考图 + "参考图1体型图2配色" 出图 |
 | **M3 体验完善** | fullscreen 模式、缩略图缓存、多板管理、连线标签编译、错误重试；通道 B（直连 API）可选实现 | 20+ 节点画布流畅；断网/失败可恢复 |
 | **M4 打包分发** | 两端插件壳 + marketplace 清单 + 安装文档 + demo 视频 | 双端一条命令安装可用 |
@@ -225,8 +255,9 @@ clients/codex-plugin/
 2. **Codex 插件清单无公开正式文档**：以 Cowart 为事实标准逆向，注意其版本更新。
 3. **`ui/message` 的用户体验**：每次生成会在对话里出现一条请求消息（这是通道 A 的必然形态，Cowart 亦如此）。可用 `ui/update-model-context` 静默补充上下文，但"触发生成"仍需一条可见消息驱动 agent 行动——需实测两端哪种组合最顺。
 4. **大图性能**：单文件 HTML + base64 取图，画布超过 ~50 张图时内存压力大；缩略图分级（列表 256px / 预览原图）必须在 M3 做。
-5. **两端生图能力差异**：Codex 有内置生图；Claude 环境不一定有生图工具（取决于用户接了什么 MCP/工具）。skill 里要写清探测顺序与"无生图能力时提示用户接入"的兜底话术。
-6. **命名**：`mindart` 为工作名，发布前查重（npm / marketplace / 商标）。
+5. **导图库自定义节点上限**：simple-mind-map 的节点自定义内容若装不下"生成节点"的输入框/按钮交互（SVG 渲染管线对可交互 DOM 的支持需实测），降级路径是 mind-elixir（DOM 节点）或"节点内只展示状态、编辑放侧边抽屉"的交互折衷。M1 第一周出结论。
+6. **两端生图能力差异**：Codex 有内置生图；Claude 环境不一定有生图工具（取决于用户接了什么 MCP/工具）。skill 里要写清探测顺序与"无生图能力时提示用户接入"的兜底话术。
+7. **命名**：`mindart` 为工作名，发布前查重（npm / marketplace / 商标）。
 
 ## 11. 参考资料
 
