@@ -29,5 +29,15 @@ node packages/server/dist/index.js
 ## 插件目录
 
 - Codex：`clients/codex-plugin`
+- Codex marketplace：`.agents/plugins/marketplace.json`
 - Claude Code：`clients/claude-plugin`
 - Claude marketplace：`.claude-plugin/marketplace.json`
+
+## Codex 安装
+
+```bash
+codex plugin marketplace add zjywill/mindart --ref main
+codex plugin add mindart@mindart
+```
+
+安装或更新后，请新建 Codex 任务以加载 MindArt skill 与 MCP 服务。

@@ -1,0 +1,20 @@
+{
+  "name": "mindart",
+  "interface": {
+    "displayName": "MindArt"
+  },
+  "plugins": [
+    {
+      "name": "mindart",
+      "source": {
+        "source": "local",
+        "path": "./clients/codex-plugin"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}
