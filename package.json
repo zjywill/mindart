@@ -8,7 +8,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "pnpm --filter @mindart/ui build && pnpm --filter @mindart/server build",
+    "build": "pnpm --filter @mindart/ui build && pnpm --filter @mindart/server build && pnpm --filter @mindart/ui build:codex-plugin",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
     "test:coverage": "pnpm -r test:coverage",

@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -47,5 +47,18 @@ describe("plugin packaging", () => {
       skills: "./skills/",
     });
     expect(claude.name).toBe("mindart");
+  });
+
+  it("ships a self-contained Codex runtime bundle", async () => {
+    const pluginRoot = path.join(repositoryRoot, "clients/codex-plugin");
+    const startScript = await readFile(
+      path.join(pluginRoot, "scripts/start-mcp.mjs"),
+      "utf8",
+    );
+
+    expect(startScript).toContain('path.join(pluginRoot, "dist", "server.mjs")');
+    expect(startScript).not.toContain("corepack");
+    await access(path.join(pluginRoot, "dist", "server.mjs"));
+    await access(path.join(pluginRoot, "dist", "ui", "mcp-app.html"));
   });
 });
