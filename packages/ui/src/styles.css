@@ -23,6 +23,7 @@
   --mindart-danger: oklch(0.68 0.18 25);
   --mindart-warning: oklch(0.78 0.14 78);
   --mindart-link: oklch(0.72 0.16 18);
+  --mindart-tree-link: oklch(0.82 0.008 255 / 0.78);
   --mindart-focus: oklch(0.79 0.12 174);
   --mindart-shadow: oklch(0 0 0 / 0.38);
   font-family:
@@ -58,6 +59,7 @@
   --mindart-danger: oklch(0.56 0.19 25);
   --mindart-warning: oklch(0.58 0.14 72);
   --mindart-link: oklch(0.58 0.18 18);
+  --mindart-tree-link: oklch(0.34 0.01 255 / 0.68);
   --mindart-focus: oklch(0.5 0.14 174);
   --mindart-shadow: oklch(0.2 0.01 255 / 0.18);
 }
@@ -1140,8 +1142,22 @@ me-tpc:hover {
   z-index: 4;
 }
 
-.topiclinks path {
-  stroke: color-mix(in oklch, var(--mindart-text) 42%, transparent);
+.lines path,
+.subLines path {
+  stroke: var(--mindart-tree-link) !important;
+  stroke-width: 2.25px;
+  stroke-linecap: round;
+  filter: drop-shadow(
+    0 0 2px color-mix(in oklch, var(--mindart-tree-link) 36%, transparent)
+  );
+}
+
+.topiclinks path[stroke="transparent"] {
+  stroke: transparent;
+}
+
+.topiclinks path[stroke="var(--mindart-link)"] {
+  stroke: var(--mindart-link);
   stroke-width: 2px;
   stroke-linecap: round;
 }
@@ -1161,6 +1177,10 @@ me-tpc:hover {
   border: 1px solid var(--mindart-border);
   border-radius: 6px;
   box-shadow: 0 4px 12px var(--mindart-shadow);
+}
+
+.svg-label:empty {
+  display: none;
 }
 
 me-epd {

@@ -26,6 +26,12 @@ import {
 import { MindArtBridge, type StructuredResult } from "./bridge.js";
 import { buildGenerationInput } from "./compile.js";
 import {
+  directBranchPath,
+  directSubBranchPath,
+  referenceArrowHandles,
+  TREE_NODE_GAP_X,
+} from "./connections.js";
+import {
   cloneBoard,
   findNode,
   flattenBoard,
@@ -74,9 +80,11 @@ const SUPPORTED_IMAGE_TYPES = new Set([
 const MINDART_THEME = {
   name: "MindArt",
   type: "dark" as const,
+  generateMainBranch: directBranchPath,
+  generateSubBranch: directSubBranchPath,
   palette: Array.from({ length: 10 }, () => "var(--mindart-muted)"),
   cssVar: {
-    "--node-gap-x": "48px",
+    "--node-gap-x": `${TREE_NODE_GAP_X}px`,
     "--node-gap-y": "10px",
     "--main-gap-x": "76px",
     "--main-gap-y": "28px",
@@ -359,25 +367,35 @@ function nodeToMindData(node: BoardNode, isRoot = false): MindNodeObj {
 }
 
 function boardToMindData(current: Board): MindElixirData {
+  const nodeOrder = new Map(
+    Array.from(flattenBoard(current.root).keys()).map((id, index) => [id, index]),
+  );
+
   return {
     nodeData: nodeToMindData(current.root, true),
     direction: DOWN_DIRECTION,
-    arrows: current.refLines.map((line) => ({
-      id: line.id,
-      from: line.from,
-      to: line.to,
-      label: "+",
-      bidirectional: false,
-      delta1: { x: 190, y: 0 },
-      delta2: { x: -190, y: 0 },
-      style: {
-        stroke: "var(--mindart-link)",
-        labelColor: "var(--mindart-text)",
-        strokeWidth: 2,
-        strokeDasharray: "0",
-        strokeLinecap: "round",
-      },
-    })),
+    arrows: current.refLines.map((line) => {
+      const handles = referenceArrowHandles(
+        nodeOrder.get(line.from) ?? 0,
+        nodeOrder.get(line.to) ?? 0,
+      );
+
+      return {
+        id: line.id,
+        from: line.from,
+        to: line.to,
+        label: "",
+        bidirectional: false,
+        ...handles,
+        style: {
+          stroke: "var(--mindart-link)",
+          labelColor: "var(--mindart-text)",
+          strokeWidth: 2,
+          strokeDasharray: "0",
+          strokeLinecap: "round",
+        },
+      };
+    }),
   };
 }
 
@@ -436,7 +454,7 @@ function frameInitialView(): void {
   const preferredScale = Math.min(0.82, Math.max(0.64, window.innerHeight / 1100));
   mind.scale(preferredScale);
   mind.toCenter();
-  mind.move(-96, 34);
+  mind.move(-132, 34);
 }
 
 function bindMindEvents(instance: MindElixirInstance): void {

@@ -1,0 +1,63 @@
+{
+  "version": 1,
+  "id": "board-5da47103",
+  "title": "MindArt",
+  "styleNote": "",
+  "root": {
+    "id": "root",
+    "title": "MindArt",
+    "refs": [],
+    "expanded": true,
+    "children": [
+      {
+        "id": "node-bbae9ec4-0",
+        "title": "image-mrz2aco9-34d1bd1b",
+        "status": "ready",
+        "refs": [],
+        "asset": "assets/image-mrz2aco9-34d1bd1b-212b7b.png",
+        "expanded": true,
+        "children": [
+          {
+            "id": "fbd9d3e404eb6179",
+            "title": "新图卡",
+            "status": "draft",
+            "refs": [
+              {
+                "order": 1,
+                "source": "parent",
+                "usage": ""
+              },
+              {
+                "order": 2,
+                "source": "node-d8ac7dab-0",
+                "usage": "",
+                "refLineId": "ref-node-d8ac7dab-0-fbd9d3e404eb6179"
+              }
+            ],
+            "expanded": true,
+            "children": []
+          }
+        ]
+      },
+      {
+        "id": "node-d8ac7dab-0",
+        "title": "ChatGPT Image Jul 25, 2026, 06_15_13 PM",
+        "status": "ready",
+        "refs": [],
+        "asset": "assets/ChatGPT-Image-Jul-25-2026-06_15_13-PM-2d7eaf.png",
+        "expanded": true,
+        "children": []
+      }
+    ]
+  },
+  "refLines": [
+    {
+      "id": "ref-node-d8ac7dab-0-fbd9d3e404eb6179",
+      "from": "node-d8ac7dab-0",
+      "to": "fbd9d3e404eb6179"
+    }
+  ],
+  "requests": {},
+  "createdAt": "2026-08-01T13:54:09.287Z",
+  "updatedAt": "2026-08-01T13:57:11.153Z"
+}
