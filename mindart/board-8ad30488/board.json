@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "id": "board-8ad30488",
+  "title": "未命名画板",
+  "styleNote": "",
+  "root": {
+    "id": "root",
+    "title": "未命名画板",
+    "refs": [],
+    "expanded": true,
+    "children": [
+      {
+        "id": "fc03560268d15f83",
+        "title": "新图卡",
+        "status": "draft",
+        "refs": [],
+        "expanded": true,
+        "children": [
+          {
+            "id": "fc0354f0f12a369d",
+            "title": "新图卡",
+            "status": "draft",
+            "refs": [],
+            "expanded": true,
+            "children": []
+          }
+        ]
+      }
+    ]
+  },
+  "refLines": [],
+  "requests": {},
+  "createdAt": "2026-08-02T01:35:33.686Z",
+  "updatedAt": "2026-08-02T02:02:31.847Z"
+}

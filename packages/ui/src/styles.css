@@ -294,11 +294,95 @@ button:disabled {
 .card-icon-button:active,
 .reference-add:active,
 .reference-thumb:active,
+.node-context-menu button:active,
 .primary-button:active,
 .secondary-button:active,
 .generate-button:active,
 .history-button:active {
   transform: scale(0.96);
+}
+
+.node-context-menu {
+  position: fixed;
+  z-index: 80;
+  display: grid;
+  width: 224px;
+  padding: 4px;
+  color: var(--mindart-text);
+  background: color-mix(in oklch, var(--mindart-surface) 97%, transparent);
+  border: 1px solid var(--mindart-border-strong);
+  border-radius: 8px;
+  box-shadow: 0 16px 48px var(--mindart-shadow);
+  backdrop-filter: blur(18px) saturate(1.08);
+}
+
+.node-context-menu button {
+  display: flex;
+  width: 100%;
+  min-height: 40px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  color: var(--mindart-text);
+  text-align: start;
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+  cursor: pointer;
+  transition:
+    color 120ms ease-out,
+    background-color 120ms ease-out,
+    transform 120ms ease-out;
+}
+
+.node-context-menu button:hover,
+.node-context-menu button:focus-visible {
+  background: var(--mindart-surface-hover);
+}
+
+.node-context-menu button > span {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 9px;
+  font-size: 0.8125rem;
+  font-weight: 550;
+}
+
+.node-context-menu button svg {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  color: var(--mindart-muted);
+}
+
+.node-context-menu kbd {
+  flex: 0 0 auto;
+  min-width: 28px;
+  padding: 2px 6px;
+  color: var(--mindart-muted);
+  font: inherit;
+  font-size: 0.625rem;
+  line-height: 1.35;
+  text-align: center;
+  background: var(--mindart-surface-raised);
+  border: 1px solid var(--mindart-border);
+  border-radius: 4px;
+}
+
+.node-context-menu .danger-menu-item {
+  color: var(--mindart-danger);
+}
+
+.node-context-menu .danger-menu-item svg {
+  color: currentColor;
+}
+
+.menu-separator {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--mindart-border);
 }
 
 .canvas-region {
@@ -1131,6 +1215,25 @@ me-tpc {
   padding: 0 !important;
   background: transparent !important;
   border-radius: 8px !important;
+}
+
+.map-container me-tpc > .root-card,
+.map-container me-tpc > .image-card {
+  pointer-events: auto;
+}
+
+.map-container me-tpc input,
+.map-container me-tpc textarea,
+.map-container me-tpc button {
+  pointer-events: auto;
+}
+
+.card-title-input,
+.card-prompt {
+  cursor: text;
+  touch-action: manipulation;
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 me-tpc.selected {

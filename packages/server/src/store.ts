@@ -189,7 +189,7 @@ export class MindArtStore {
     return boards.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
 
-  async openBoard(boardId?: string, title = "未命名画板"): Promise<Board> {
+  async openBoard(boardId?: string, title?: string): Promise<Board> {
     await this.initialize();
     if (boardId) {
       try {
@@ -199,8 +199,16 @@ export class MindArtStore {
       }
     }
 
+    if (!boardId && title === undefined) {
+      const [latest] = await this.listBoards();
+      if (latest) return this.getBoard(latest.id);
+    }
+
     const id = boardId ?? `board-${randomUUID().slice(0, 8)}`;
-    const board = createEmptyBoard(id, title.trim() || "未命名画板");
+    const board = createEmptyBoard(
+      id,
+      title?.trim() || "未命名画板",
+    );
     await this.writeBoard(board);
     return board;
   }

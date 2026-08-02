@@ -20318,14 +20318,18 @@ var MindArtStore = class {
 		}
 		return boards.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 	}
-	async openBoard(boardId, title = "未命名画板") {
+	async openBoard(boardId, title) {
 		await this.initialize();
 		if (boardId) try {
 			return await this.getBoard(boardId);
 		} catch (error) {
 			if (!isMissingFile(error)) throw error;
 		}
-		const board = createEmptyBoard(boardId ?? `board-${randomUUID().slice(0, 8)}`, title.trim() || "未命名画板");
+		if (!boardId && title === void 0) {
+			const [latest] = await this.listBoards();
+			if (latest) return this.getBoard(latest.id);
+		}
+		const board = createEmptyBoard(boardId ?? `board-${randomUUID().slice(0, 8)}`, title?.trim() || "未命名画板");
 		await this.writeBoard(board);
 		return board;
 	}

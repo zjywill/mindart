@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MindArtStore } from "./store.js";
 
 const PIXEL = Buffer.from(
@@ -95,6 +95,32 @@ describe("MindArtStore", () => {
     expect(
       JSON.parse(await readFile(store.boardFile(board.id), "utf8")),
     ).toMatchObject({ id: board.id, version: 1 });
+  });
+
+  it("reopens the most recently updated board when no id is provided", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-08-02T01:00:00.000Z"));
+      await store.openBoard("board-first", "First");
+      vi.setSystemTime(new Date("2026-08-02T01:01:00.000Z"));
+      await store.openBoard("board-second", "Second");
+
+      expect((await store.openBoard()).id).toBe("board-second");
+
+      vi.setSystemTime(new Date("2026-08-02T01:02:00.000Z"));
+      await store.updateBoard("board-first", { title: "First updated" });
+      expect((await store.openBoard()).id).toBe("board-first");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("creates a new board when a title is explicitly provided", async () => {
+    const existing = await store.openBoard("board-existing", "Existing");
+    const created = await store.openBoard(undefined, "New board");
+
+    expect(created.id).not.toBe(existing.id);
+    expect(created.title).toBe("New board");
   });
 
   it("records a retryable error on both request and node", async () => {

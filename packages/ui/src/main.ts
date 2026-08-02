@@ -157,7 +157,6 @@ appRoot.innerHTML = `
         <span id="save-state" class="save-state" role="status" aria-live="polite"></span>
       </div>
       <div class="toolbar-panel toolbar-actions">
-        <button class="icon-button" id="import-button" type="button" aria-label="选择图片" title="选择图片">${icon("import")}</button>
         <button class="icon-button" id="fit-button" type="button" aria-label="适应画板" title="适应画板">${icon("scan")}</button>
         <button class="icon-button" id="fullscreen-button" type="button" aria-label="切换全屏" title="切换全屏">${icon("maximize")}</button>
         <span class="toolbar-divider" aria-hidden="true"></span>
@@ -200,6 +199,33 @@ appRoot.innerHTML = `
         </div>
         <div id="inspector-content" class="inspector-content"></div>
       </aside>
+
+      <div id="node-context-menu" class="node-context-menu" role="menu" aria-label="图卡操作" hidden>
+        <button type="button" role="menuitem" data-menu-action="add-child">
+          <span>${icon("sparkles")}添加子级图卡</span>
+          <kbd>Tab</kbd>
+        </button>
+        <button type="button" role="menuitem" data-menu-action="add-parent">
+          <span>${icon("imagePlus")}插入父级图卡</span>
+          <kbd>Ctrl + Enter</kbd>
+        </button>
+        <button type="button" role="menuitem" data-menu-action="add-image-child">
+          <span>${icon("import")}添加图片子卡</span>
+        </button>
+        <div class="menu-separator" role="separator"></div>
+        <button type="button" role="menuitem" data-menu-action="add-reference">
+          <span>${icon("link")}添加参考图</span>
+        </button>
+        <button type="button" role="menuitem" data-menu-action="focus">
+          <span>${icon("scan")}专注此分支</span>
+        </button>
+        <button type="button" role="menuitem" data-menu-action="cancel-focus">
+          <span>${icon("scan")}退出专注</span>
+        </button>
+        <button type="button" class="danger-menu-item" role="menuitem" data-menu-action="delete">
+          <span>${icon("trash")}删除图卡</span>
+        </button>
+      </div>
     </main>
   </div>
 
@@ -216,12 +242,12 @@ const boardTitleInput =
   document.querySelector<HTMLInputElement>("#board-title")!;
 const saveState = document.querySelector<HTMLSpanElement>("#save-state")!;
 const toastRegion = document.querySelector<HTMLDivElement>("#toast-region")!;
-const importButton =
-  document.querySelector<HTMLButtonElement>("#import-button")!;
 const imageFileInput =
   document.querySelector<HTMLInputElement>("#image-file-input")!;
 const imageDropOverlay =
   document.querySelector<HTMLDivElement>("#image-drop-overlay")!;
+const nodeContextMenu =
+  document.querySelector<HTMLDivElement>("#node-context-menu")!;
 const panelButton = document.querySelector<HTMLButtonElement>("#panel-button")!;
 const inspectorClose =
   document.querySelector<HTMLButtonElement>("#inspector-close")!;
@@ -242,6 +268,9 @@ let pollTimer: number | undefined;
 let panelOpen = false;
 let importInFlight = false;
 let fileDragDepth = 0;
+let contextMenuNodeId: string | null = null;
+let contextMenuReturnFocus: HTMLElement | null = null;
+let pendingImportParentNodeId: string | null = null;
 const assetCache = new Map<string, string>();
 let assetObserver: IntersectionObserver | null = null;
 
@@ -284,7 +313,7 @@ function statusLabel(node: BoardNode): { label: string; icon: IconName } {
 function renderCard(node: BoardNode, isRoot: boolean): string {
   if (isRoot) {
     return `
-      <article class="root-card" data-node-id="${escapeHtml(node.id)}" tabindex="0">
+      <article class="root-card" data-node-id="${escapeHtml(node.id)}" tabindex="0" aria-haspopup="menu" aria-controls="node-context-menu">
         <div class="root-icon">${icon("sparkles")}</div>
         <span class="root-title">${escapeHtml(node.title)}</span>
       </article>
@@ -317,7 +346,7 @@ function renderCard(node: BoardNode, isRoot: boolean): string {
 
   if (isReady) {
     return `
-      <article class="image-card ready-card status-ready" data-node-id="${escapeHtml(node.id)}" tabindex="0" aria-label="${escapeHtml(node.title || "未命名图卡")}，${state.label}">
+      <article class="image-card ready-card status-ready" data-node-id="${escapeHtml(node.id)}" tabindex="0" aria-label="${escapeHtml(node.title || "未命名图卡")}，${state.label}" aria-haspopup="menu" aria-controls="node-context-menu">
         <header class="card-header">
           <input class="card-title-input" data-action="title" value="${escapeHtml(node.title)}" maxlength="200" aria-label="图卡标题" />
           <div class="card-actions">
@@ -331,7 +360,7 @@ function renderCard(node: BoardNode, isRoot: boolean): string {
   }
 
   return `
-    <article class="image-card generation-card status-${node.status ?? "draft"}" data-node-id="${escapeHtml(node.id)}" tabindex="0" aria-label="${escapeHtml(node.title || "未命名图卡")}，${state.label}">
+    <article class="image-card generation-card status-${node.status ?? "draft"}" data-node-id="${escapeHtml(node.id)}" tabindex="0" aria-label="${escapeHtml(node.title || "未命名图卡")}，${state.label}" aria-haspopup="menu" aria-controls="node-context-menu">
       <header class="card-header">
         <div class="generation-heading">${icon("imagePlus", "generation-type-icon")}<input class="card-title-input" data-action="title" value="${escapeHtml(node.title)}" maxlength="200" aria-label="图卡标题" /></div>
         ${node.status && node.status !== "draft" ? `<span class="status-pill">${icon(state.icon, state.icon === "loading" ? "status-icon spin" : "status-icon")}${state.label}</span>` : ""}
@@ -409,14 +438,24 @@ function renderBoard(nextBoard: Board): void {
       el: mapElement,
       direction: DOWN_DIRECTION,
       toolBar: false,
-      keypress: true,
+      keypress: {
+        Tab: () => {
+          void addNamedChild(mind?.currentNode ?? undefined);
+        },
+        Enter: (event: KeyboardEvent) => {
+          if (event.ctrlKey || event.metaKey) {
+            void insertNamedParent(mind?.currentNode ?? undefined);
+          } else if (event.shiftKey) {
+            void mind?.insertSibling("before");
+          } else {
+            void mind?.insertSibling("after");
+          }
+        },
+      },
       draggable: true,
       editable: true,
       overflowHidden: false,
-      contextMenu: {
-        focus: true,
-        link: true,
-      },
+      contextMenu: false,
       theme: MINDART_THEME,
       newTopicName: "新图卡",
     });
@@ -427,6 +466,7 @@ function renderBoard(nextBoard: Board): void {
     mind.refresh(data);
   }
 
+  bindCardControlKeys();
   renderInspector();
   hydrateAssets();
   schedulePolling();
@@ -494,7 +534,7 @@ async function handleMindOperation(rawOperation: unknown): Promise<void> {
 
   queueMicrotask(() => {
     syncTreeFromMind();
-    queueSave();
+    queueSave(false, true);
   });
 }
 
@@ -801,7 +841,7 @@ function beginReferencePick(targetId: string): void {
   target?.focus();
 }
 
-function queueSave(refreshCards = false): void {
+function queueSave(refreshCards = false, immediate = false): void {
   if (!board) return;
   saveRevision += 1;
   refreshAfterSave ||= refreshCards;
@@ -810,7 +850,7 @@ function queueSave(refreshCards = false): void {
   saveTimer = window.setTimeout(() => {
     saveTimer = undefined;
     void flushSave().catch(() => undefined);
-  }, 500);
+  }, immediate ? 0 : 500);
 }
 
 function hasPendingSave(): boolean {
@@ -1022,14 +1062,11 @@ function readFileAsBase64(file: File): Promise<string> {
 
 function setImportBusy(busy: boolean): void {
   importInFlight = busy;
-  importButton.disabled = busy;
   imageFileInput.disabled = busy;
-  importButton.innerHTML = icon(
-    busy ? "loading" : "import",
-    busy ? "spin" : "icon",
+  const menuItem = nodeContextMenu.querySelector<HTMLButtonElement>(
+    '[data-menu-action="add-image-child"]',
   );
-  importButton.ariaLabel = busy ? "正在导入图片" : "选择图片";
-  importButton.title = importButton.ariaLabel;
+  if (menuItem) menuItem.disabled = busy;
 }
 
 async function importImageFiles(fileList: FileList | File[]): Promise<void> {
@@ -1059,7 +1096,9 @@ async function importImageFiles(fileList: FileList | File[]): Promise<void> {
     return;
   }
 
-  const parentNodeId = selectedNodeId;
+  const parentNodeId =
+    pendingImportParentNodeId ?? selectedNodeId ?? board.root.id;
+  pendingImportParentNodeId = null;
   const failures: string[] = [];
   let imported = 0;
   let latestBoard = board;
@@ -1179,6 +1218,198 @@ function demoBoard(): Board {
   };
 }
 
+function setContextMenuItemVisible(action: string, visible: boolean): void {
+  const item = nodeContextMenu.querySelector<HTMLButtonElement>(
+    `[data-menu-action="${action}"]`,
+  );
+  if (item) item.hidden = !visible;
+}
+
+function stopMindShortcutPropagation(event: KeyboardEvent): void {
+  event.stopPropagation();
+}
+
+function bindCardControlKeys(): void {
+  mapElement
+    .querySelectorAll<HTMLElement>("input, textarea, button, select")
+    .forEach((control) => {
+      control.addEventListener("keydown", stopMindShortcutPropagation);
+    });
+}
+
+function createNamedMindNode(title: string): MindNodeObj | undefined {
+  if (!mind) return undefined;
+  return {
+    ...mind.generateNewObj(),
+    topic: title,
+  } as MindNodeObj;
+}
+
+async function addNamedChild(
+  topic = mind?.currentNode ?? undefined,
+): Promise<void> {
+  if (!mind || !topic) return;
+  const node = createNamedMindNode("新子级图卡");
+  if (node) await mind.addChild(topic, node);
+}
+
+async function insertNamedParent(
+  topic = mind?.currentNode ?? undefined,
+): Promise<void> {
+  if (!mind || !topic || topic.nodeObj.id === board?.root.id) return;
+  const node = createNamedMindNode("新父级图卡");
+  if (node) await mind.insertParent(topic, node);
+}
+
+function closeNodeContextMenu(restoreFocus = false): void {
+  if (nodeContextMenu.hidden) return;
+  nodeContextMenu.hidden = true;
+  contextMenuNodeId = null;
+  if (restoreFocus) contextMenuReturnFocus?.focus();
+  contextMenuReturnFocus = null;
+}
+
+function openNodeContextMenu(event: MouseEvent, nodeId: string): void {
+  if (!board || !mind) return;
+  const card = mapElement.querySelector<HTMLElement>(
+    `[data-node-id="${CSS.escape(nodeId)}"]`,
+  );
+  if (!card) return;
+
+  event.preventDefault();
+  event.stopPropagation();
+  closeNodeContextMenu();
+
+  const topic = mind.findEle(nodeId);
+  mind.selectNode(topic);
+  handleNodeSelection(nodeId);
+  contextMenuNodeId = nodeId;
+  contextMenuReturnFocus = card;
+
+  const isRoot = nodeId === board.root.id;
+  setContextMenuItemVisible("add-parent", !isRoot);
+  setContextMenuItemVisible("add-reference", !isRoot);
+  setContextMenuItemVisible("focus", !isRoot && !mind.isFocusMode);
+  setContextMenuItemVisible("cancel-focus", mind.isFocusMode);
+  setContextMenuItemVisible("delete", !isRoot);
+
+  nodeContextMenu.hidden = false;
+  const menuRect = nodeContextMenu.getBoundingClientRect();
+  const cardRect = card.getBoundingClientRect();
+  const requestedX = event.clientX || cardRect.left + 20;
+  const requestedY = event.clientY || cardRect.top + 20;
+  const gutter = 8;
+  nodeContextMenu.style.left = `${Math.max(gutter, Math.min(requestedX, window.innerWidth - menuRect.width - gutter))}px`;
+  nodeContextMenu.style.top = `${Math.max(gutter, Math.min(requestedY, window.innerHeight - menuRect.height - gutter))}px`;
+  nodeContextMenu
+    .querySelector<HTMLButtonElement>("button:not([hidden]):not(:disabled)")
+    ?.focus();
+}
+
+function openImagePickerForNode(nodeId: string): void {
+  if (importInFlight) {
+    showToast("图片正在导入");
+    return;
+  }
+  pendingImportParentNodeId = nodeId;
+  selectedNodeId = nodeId;
+  imageFileInput.value = "";
+  imageFileInput.click();
+}
+
+async function runContextMenuAction(action: string): Promise<void> {
+  if (!mind || !contextMenuNodeId) return;
+  const nodeId = contextMenuNodeId;
+  const topic = mind.findEle(nodeId);
+  closeNodeContextMenu();
+
+  if (action === "add-child") {
+    await addNamedChild(topic);
+    return;
+  }
+  if (action === "add-parent") {
+    await insertNamedParent(topic);
+    return;
+  }
+  if (action === "add-image-child") {
+    openImagePickerForNode(nodeId);
+    return;
+  }
+  if (action === "add-reference") {
+    beginReferencePick(nodeId);
+    return;
+  }
+  if (action === "focus") {
+    mind.focusNode(topic);
+    return;
+  }
+  if (action === "cancel-focus") {
+    mind.cancelFocus();
+    return;
+  }
+  if (action === "delete") {
+    await mind.removeNodes([topic]);
+  }
+}
+
+mapElement.addEventListener("contextmenu", (event) => {
+  const target = event.target as HTMLElement;
+  const card = target.closest<HTMLElement>("[data-node-id]");
+  if (!card) return;
+  openNodeContextMenu(event, card.dataset.nodeId!);
+});
+
+nodeContextMenu.addEventListener("click", (event) => {
+  const button = (event.target as HTMLElement).closest<HTMLButtonElement>(
+    "[data-menu-action]",
+  );
+  if (!button || button.disabled) return;
+  void runContextMenuAction(button.dataset.menuAction!).catch((error) => {
+    showToast(errorMessage(error), true);
+  });
+});
+
+nodeContextMenu.addEventListener("keydown", (event) => {
+  const items = Array.from(
+    nodeContextMenu.querySelectorAll<HTMLButtonElement>(
+      "button:not([hidden]):not(:disabled)",
+    ),
+  );
+  const currentIndex = items.indexOf(document.activeElement as HTMLButtonElement);
+  let nextIndex: number | undefined;
+
+  if (event.key === "ArrowDown") {
+    nextIndex = (currentIndex + 1) % items.length;
+  } else if (event.key === "ArrowUp") {
+    nextIndex = (currentIndex - 1 + items.length) % items.length;
+  } else if (event.key === "Home") {
+    nextIndex = 0;
+  } else if (event.key === "End") {
+    nextIndex = items.length - 1;
+  } else if (event.key === "Escape") {
+    event.preventDefault();
+    closeNodeContextMenu(true);
+    return;
+  } else if (event.key === "Tab") {
+    closeNodeContextMenu();
+    return;
+  }
+
+  if (nextIndex !== undefined) {
+    event.preventDefault();
+    items[nextIndex]?.focus();
+  }
+});
+
+document.addEventListener("pointerdown", (event) => {
+  if (
+    !nodeContextMenu.hidden &&
+    !nodeContextMenu.contains(event.target as Node)
+  ) {
+    closeNodeContextMenu();
+  }
+});
+
 mapElement.addEventListener("click", (event) => {
   const target = event.target as HTMLElement;
   const card = target.closest<HTMLElement>("[data-node-id]");
@@ -1227,11 +1458,25 @@ mapElement.addEventListener("keydown", (event) => {
   }
 });
 
+mapElement.addEventListener("focusout", (event) => {
+  if ((event.target as HTMLElement).matches("input, textarea")) {
+    void flushSave().catch(() => undefined);
+  }
+});
+
 boardTitleInput.addEventListener("input", () => {
   if (!board) return;
   board.title = boardTitleInput.value || "未命名画板";
   board.root.title = board.title;
   queueSave(true);
+});
+boardTitleInput.addEventListener("blur", () => {
+  void flushSave().catch(() => undefined);
+});
+inspectorContent.addEventListener("focusout", (event) => {
+  if ((event.target as HTMLElement).matches("input, textarea")) {
+    void flushSave().catch(() => undefined);
+  }
 });
 
 document.querySelector("#fit-button")?.addEventListener("click", () => {
@@ -1240,13 +1485,11 @@ document.querySelector("#fit-button")?.addEventListener("click", () => {
 document.querySelector("#fullscreen-button")?.addEventListener("click", () => {
   void bridge.toggleFullscreen().catch((error) => showToast(errorMessage(error), true));
 });
-importButton.addEventListener("click", () => {
-  imageFileInput.value = "";
-  imageFileInput.click();
-});
 imageFileInput.addEventListener("change", () => {
   if (imageFileInput.files?.length) {
     void importImageFiles(imageFileInput.files);
+  } else {
+    pendingImportParentNodeId = null;
   }
 });
 
@@ -1272,6 +1515,7 @@ window.addEventListener("drop", (event) => {
   event.preventDefault();
   fileDragDepth = 0;
   imageDropOverlay.hidden = true;
+  pendingImportParentNodeId = null;
   void importImageFiles(files);
 });
 window.addEventListener("paste", (event) => {
@@ -1280,7 +1524,16 @@ window.addEventListener("paste", (event) => {
   );
   if (!files.length) return;
   event.preventDefault();
+  pendingImportParentNodeId = null;
   void importImageFiles(files);
+});
+window.addEventListener("pagehide", () => {
+  void flushSave().catch(() => undefined);
+});
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") {
+    void flushSave().catch(() => undefined);
+  }
 });
 
 function setPanelOpen(open: boolean): void {
