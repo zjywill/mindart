@@ -62,6 +62,61 @@ describe("generation compiler", () => {
     );
   });
 
+  it("tells the host to feed reference images as images, not as text", () => {
+    const board = createEmptyBoard("board-refs", "Refs");
+    board.root.children = [
+      {
+        id: "parent",
+        title: "Parent",
+        status: "ready",
+        asset: "assets/parent.png",
+        children: [
+          {
+            id: "target",
+            title: "Result",
+            status: "draft",
+            prompt: "换个场景",
+            refs: [{ order: 1, source: "parent", usage: "主体" }],
+            children: [],
+          },
+        ],
+      },
+    ];
+
+    const result = compileGenerationRequest(
+      board,
+      "target",
+      "/tmp/mindart/board-refs",
+      "req-refs",
+    );
+
+    expect(result.compiledPrompt).toContain("逐张输入出图模型");
+    expect(result.compiledPrompt).toContain("不得先改写成文字描述再生成");
+    expect(result.compiledPrompt).toContain("不要静默丢弃任何一张");
+    expect(result.compiledPrompt).toContain("mindart_report_error");
+  });
+
+  it("omits the reference-image rules when a card has no references", () => {
+    const board = createEmptyBoard("board-no-refs", "No refs");
+    board.root.children.push({
+      id: "target",
+      title: "Target",
+      status: "draft",
+      prompt: "从零画一张",
+      children: [],
+    });
+
+    const result = compileGenerationRequest(
+      board,
+      "target",
+      "/tmp/mindart/board-no-refs",
+      "req-no-refs",
+    );
+
+    expect(result.refs).toHaveLength(0);
+    expect(result.compiledPrompt).not.toContain("参考图用法");
+  });
+
   it("requires a prompt", () => {
     const board = createEmptyBoard("board-empty-prompt", "Empty");
     board.root.children.push({

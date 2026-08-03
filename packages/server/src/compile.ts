@@ -80,6 +80,13 @@ export function compileGenerationRequest(
     lines.push(`本卡备注：${location.node.note.trim()}`);
   }
 
+  if (refs.length > 0) {
+    lines.push(
+      "参考图用法：必须把上列图片文件本身逐张输入出图模型，传入顺序与编号一致；不得先改写成文字描述再生成。",
+      "若出图模型接不下全部参考图，先向用户说明并确认取舍，不要静默丢弃任何一张；确实无法完成时调用 mindart_report_error。",
+    );
+  }
+
   lines.push(
     `产出要求：完成后调用 mindart_apply_result(request_id="${requestId}", image_path=...)。不要只把图片贴在对话里。`,
   );
