@@ -2,6 +2,7 @@ import MindElixir from "mind-elixir";
 import "mind-elixir/style.css";
 import demoBodyUrl from "./assets/demo-body.jpg";
 import demoPaletteUrl from "./assets/demo-palette.jpg";
+import { bindComposedInput } from "./composed-input.js";
 import {
   AlertCircle,
   Check,
@@ -264,6 +265,8 @@ let saveRequested = false;
 let saveRevision = 0;
 let persistedRevision = 0;
 let refreshAfterSave = false;
+let inspectorRenderPending = false;
+let inspectorHistoryOpen = false;
 let pollTimer: number | undefined;
 let panelOpen = false;
 let importInFlight = false;
@@ -467,7 +470,7 @@ function renderBoard(nextBoard: Board): void {
   }
 
   bindCardControlKeys();
-  renderInspector();
+  renderInspector(inspectorHistoryOpen, true);
   hydrateAssets();
   schedulePolling();
   void bridge.setModelContext({
@@ -662,7 +665,32 @@ function updateReferenceUsage(
   queueSave();
 }
 
-function renderInspector(historyOpen = false): void {
+function inspectorHoldsFocus(): boolean {
+  const active = document.activeElement;
+  return (
+    active !== null &&
+    active !== inspectorContent &&
+    inspectorContent.contains(active)
+  );
+}
+
+function flushPendingInspectorRender(): void {
+  if (!inspectorRenderPending || inspectorHoldsFocus()) return;
+  renderInspector(inspectorHistoryOpen);
+}
+
+function renderInspector(historyOpen = false, preserveFocus = false): void {
+  // Rendering replaces every field node. Doing that under a focused field
+  // drops the caret and aborts an in-flight IME composition, so a background
+  // refresh waits until the user has left the panel. Caller-initiated renders
+  // pass preserveFocus=false and always run.
+  if (preserveFocus && inspectorHoldsFocus()) {
+    inspectorRenderPending = true;
+    return;
+  }
+  inspectorRenderPending = false;
+  inspectorHistoryOpen = historyOpen;
+
   if (!board) {
     inspectorContent.innerHTML = `<div class="loading-panel">${icon("loading", "spin")}<span>正在加载</span></div>`;
     return;
@@ -788,22 +816,22 @@ function bindInspectorFields(node: BoardNode, historyOpen: boolean): void {
     inspectorContent.querySelector<HTMLTextAreaElement>("#node-prompt")!;
   const note =
     inspectorContent.querySelector<HTMLTextAreaElement>("#node-note")!;
-  title.addEventListener("input", () => {
+  bindComposedInput(title, () => {
     node.title = title.value;
     queueSave(true);
   });
-  prompt.addEventListener("input", () => {
+  bindComposedInput(prompt, () => {
     node.prompt = prompt.value;
     queueSave(true);
   });
-  note.addEventListener("input", () => {
+  bindComposedInput(note, () => {
     node.note = note.value;
     queueSave();
   });
   inspectorContent
     .querySelectorAll<HTMLInputElement>("[data-reference-source]")
     .forEach((input) => {
-      input.addEventListener("input", () => {
+      bindComposedInput(input, () => {
         updateReferenceUsage(
           node.id,
           input.dataset.referenceSource!,
@@ -1477,6 +1505,9 @@ inspectorContent.addEventListener("focusout", (event) => {
   if ((event.target as HTMLElement).matches("input, textarea")) {
     void flushSave().catch(() => undefined);
   }
+  // focusout runs before the next element takes focus, so settle first and
+  // only then apply a render that was deferred while a field was focused.
+  window.setTimeout(flushPendingInspectorRender, 0);
 });
 
 document.querySelector("#fit-button")?.addEventListener("click", () => {
