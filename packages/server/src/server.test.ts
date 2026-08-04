@@ -6,7 +6,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createServer } from "./server.js";
 import { MindArtStore } from "./store.js";
-import { CANVAS_RESOURCE_URI } from "./tools.js";
+import { CANVAS_PANEL_KEY, CANVAS_RESOURCE_URI } from "./tools.js";
 
 describe("MCP server", () => {
   const roots: string[] = [];
@@ -76,6 +76,22 @@ describe("MCP server", () => {
             ?.visibility,
           `${name} must be app-only`,
         ).toEqual(["app"]);
+      }
+
+      // The host opens a panel per model-initiated call to a resource-bearing
+      // tool, and collapses panels that share a key. Every such tool must carry
+      // the key or the session accumulates duplicate canvases.
+      const rendering = tools.tools.filter(
+        (tool) =>
+          (tool._meta?.ui as { resourceUri?: string } | undefined)
+            ?.resourceUri !== undefined,
+      );
+      expect(rendering.length).toBeGreaterThan(0);
+      for (const tool of rendering) {
+        expect(
+          (tool._meta?.ui as { exclusivePanelKey?: string }).exclusivePanelKey,
+          `${tool.name} must share the canvas panel key`,
+        ).toBe(CANVAS_PANEL_KEY);
       }
 
       const projectRoot = path.join(root, "active-project");

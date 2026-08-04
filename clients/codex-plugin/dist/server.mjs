@@ -20963,8 +20963,21 @@ function pathToFileUrl(filePath) {
 //#endregion
 //#region ../server/src/tools.ts
 var CANVAS_RESOURCE_URI = "ui://mindart/canvas.html";
+/**
+* Hosts open a fresh panel for every model-initiated call to a tool that
+* declares a resource, so a session that read the board a few times ended up
+* with a row of identical canvases. Panels sharing a key supersede one another,
+* which is what a canvas wants: one board, one panel, always the latest.
+*/
+var CANVAS_PANEL_KEY = "mindart-canvas";
+/** Renders the canvas. Every tool the model can call must carry the panel key. */
+var canvasMeta = { ui: {
+	resourceUri: CANVAS_RESOURCE_URI,
+	exclusivePanelKey: CANVAS_PANEL_KEY
+} };
 var appOnlyMeta = { ui: {
 	resourceUri: CANVAS_RESOURCE_URI,
+	exclusivePanelKey: CANVAS_PANEL_KEY,
 	visibility: ["app"]
 } };
 function success(message, structuredContent) {
@@ -20990,7 +21003,7 @@ function registerMindArtTools(server, initialStore) {
 			board: BoardSchema,
 			projectRoot: string()
 		}),
-		_meta: { ui: { resourceUri: CANVAS_RESOURCE_URI } }
+		_meta: canvasMeta
 	}, async ({ board_id, title, project_dir }) => {
 		if (project_dir && path.resolve(project_dir) !== path.resolve(store.projectRoot)) {
 			store = new MindArtStore(project_dir);
@@ -21008,7 +21021,7 @@ function registerMindArtTools(server, initialStore) {
 		description: "Read a MindArt board, including its image-card tree, references, and generation history.",
 		inputSchema: object$1({ board_id: BoardIdSchema }),
 		outputSchema: object$1({ board: BoardSchema }),
-		_meta: { ui: { resourceUri: CANVAS_RESOURCE_URI } }
+		_meta: canvasMeta
 	}, async ({ board_id }) => {
 		const board = await store.getBoard(board_id);
 		return success(`Loaded MindArt board "${board.title}".`, { board });
@@ -21152,7 +21165,7 @@ function registerMindArtTools(server, initialStore) {
 			board: BoardSchema,
 			nodeId: string()
 		}),
-		_meta: { ui: { resourceUri: CANVAS_RESOURCE_URI } }
+		_meta: canvasMeta
 	}, async ({ board_id, source_path, image_data, file_name, mime_type, parent_node_id, title }) => {
 		if (Boolean(source_path) === Boolean(image_data)) throw new Error("Provide either image_data or source_path");
 		if (image_data && !file_name) throw new Error("file_name is required with image_data");

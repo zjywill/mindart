@@ -17,9 +17,26 @@ import {
 
 export const CANVAS_RESOURCE_URI = "ui://mindart/canvas.html";
 
+/**
+ * Hosts open a fresh panel for every model-initiated call to a tool that
+ * declares a resource, so a session that read the board a few times ended up
+ * with a row of identical canvases. Panels sharing a key supersede one another,
+ * which is what a canvas wants: one board, one panel, always the latest.
+ */
+export const CANVAS_PANEL_KEY = "mindart-canvas";
+
+/** Renders the canvas. Every tool the model can call must carry the panel key. */
+const canvasMeta = {
+  ui: {
+    resourceUri: CANVAS_RESOURCE_URI,
+    exclusivePanelKey: CANVAS_PANEL_KEY,
+  },
+};
+
 const appOnlyMeta = {
   ui: {
     resourceUri: CANVAS_RESOURCE_URI,
+    exclusivePanelKey: CANVAS_PANEL_KEY,
     visibility: ["app"] as const,
   },
 };
@@ -55,7 +72,7 @@ export function registerMindArtTools(
         board: BoardSchema,
         projectRoot: z.string(),
       }),
-      _meta: { ui: { resourceUri: CANVAS_RESOURCE_URI } },
+      _meta: canvasMeta,
     },
     async ({ board_id, title, project_dir }) => {
       if (
@@ -94,7 +111,7 @@ export function registerMindArtTools(
         board_id: BoardIdSchema,
       }),
       outputSchema: z.object({ board: BoardSchema }),
-      _meta: { ui: { resourceUri: CANVAS_RESOURCE_URI } },
+      _meta: canvasMeta,
     },
     async ({ board_id }) => {
       const board = await store.getBoard(board_id);
@@ -314,7 +331,7 @@ export function registerMindArtTools(
         board: BoardSchema,
         nodeId: z.string(),
       }),
-      _meta: { ui: { resourceUri: CANVAS_RESOURCE_URI } },
+      _meta: canvasMeta,
     },
     async ({
       board_id,
