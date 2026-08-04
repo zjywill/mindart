@@ -1,6 +1,6 @@
 {
   "name": "mindart",
-  "version": "0.1.3+codex.20260804133451",
+  "version": "0.1.4+codex.20260804143929",
   "description": "A project-local image genealogy canvas for combining reference images and prompts through MCP Apps.",
   "author": {
     "name": "MindArt Contributors",

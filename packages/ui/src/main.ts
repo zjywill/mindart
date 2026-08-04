@@ -1014,11 +1014,19 @@ async function ensureBoardBinding(): Promise<void> {
     const projectRoot = knownProjectRoot;
     if (!boardId || !projectRoot) return;
     boardBinding = bridge
-      .callTool("mindart_open_canvas", {
+      .callTool<{ board?: Board }>("mindart_open_canvas", {
         board_id: boardId,
         project_dir: projectRoot,
       })
-      .then(() => undefined)
+      .then((result) => {
+        // The replayed result froze when its tool ran, so anything added after
+        // that — imports, generated cards — is missing from what the canvas
+        // just rendered. This call answers with the board as it stands now.
+        // Local edits still on their way to disk outrank it.
+        if (result.board && !hasPendingSave() && board?.id === boardId) {
+          renderBoard(result.board);
+        }
+      })
       .catch((error) => {
         boardBinding = null;
         throw error;
@@ -1646,6 +1654,11 @@ bridge.onResult = (payload: StructuredResult) => {
       return;
     }
     renderBoard(nextBoard as Board);
+    // A stale snapshot can be a bare root with no images at all, in which case
+    // nothing would lazily trigger the rebinding. Ask for the live board now.
+    void ensureBoardBinding().catch((error) => {
+      showToast(errorMessage(error), true);
+    });
   }
 };
 bridge.onError = (error) => showToast(errorMessage(error), true);
