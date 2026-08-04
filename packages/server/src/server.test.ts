@@ -62,24 +62,41 @@ describe("MCP server", () => {
       });
 
       const projectRoot = path.join(root, "active-project");
+      const created = await client.callTool({
+        name: "mindart_open_canvas",
+        arguments: { title: "Protocol", project_dir: projectRoot },
+      });
+      expect(created.isError).toBeFalsy();
+      expect(created.structuredContent).toMatchObject({
+        projectRoot,
+        board: { title: "Protocol" },
+      });
+      const boardId = (created.structuredContent as { board: { id: string } })
+        .board.id;
+
       const opened = await client.callTool({
         name: "mindart_open_canvas",
-        arguments: {
-          board_id: "board-protocol",
-          title: "Protocol",
-          project_dir: projectRoot,
-        },
+        arguments: { board_id: boardId, project_dir: projectRoot },
       });
       expect(opened.isError).toBeFalsy();
       expect(opened.structuredContent).toMatchObject({
         projectRoot,
-        board: { id: "board-protocol", title: "Protocol" },
+        board: { id: boardId, title: "Protocol" },
       });
+
+      // A board id that is not under this root means the caller is pointed at
+      // the wrong project; conjuring an empty board there would mask that.
+      const misrouted = await client.callTool({
+        name: "mindart_open_canvas",
+        arguments: { board_id: "board-not-here", project_dir: projectRoot },
+      });
+      expect(misrouted.isError).toBe(true);
+      expect(JSON.stringify(misrouted.content)).toContain("board-not-here");
 
       const imported = await client.callTool({
         name: "mindart_import_image",
         arguments: {
-          board_id: "board-protocol",
+          board_id: boardId,
           image_data:
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=",
           file_name: "upload.png",
@@ -89,7 +106,7 @@ describe("MCP server", () => {
       expect(imported.isError).toBeFalsy();
       expect(imported.structuredContent).toMatchObject({
         board: {
-          id: "board-protocol",
+          id: boardId,
           root: {
             children: [
               {

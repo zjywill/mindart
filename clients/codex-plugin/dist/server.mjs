@@ -20338,6 +20338,15 @@ var MindArtStore = class {
 		const raw = await readFile(this.boardFile(boardId), "utf8");
 		return validateBoard(JSON.parse(raw));
 	}
+	async hasBoard(boardId) {
+		try {
+			await readFile(this.boardFile(boardId), "utf8");
+			return true;
+		} catch (error) {
+			if (isMissingFile(error)) return false;
+			throw error;
+		}
+	}
 	async updateBoard(boardId, patch) {
 		const parsedPatch = BoardPatchSchema.parse(patch);
 		return this.mutateBoard(boardId, (board) => {
@@ -20939,6 +20948,7 @@ function registerMindArtTools(server, initialStore) {
 			store = new MindArtStore(project_dir);
 			await store.initialize();
 		}
+		if (board_id && !await store.hasBoard(board_id)) throw new Error(`MindArt board ${board_id} does not exist under ${store.projectRoot}. Pass project_dir for the project that owns it, or omit board_id to open the most recent board.`);
 		const board = await store.openBoard(board_id, title);
 		return success(`Opened MindArt board "${board.title}" (${board.id}).`, {
 			board,

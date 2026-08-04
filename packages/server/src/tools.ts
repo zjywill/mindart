@@ -64,6 +64,16 @@ export function registerMindArtTools(
         store = new MindArtStore(project_dir);
         await store.initialize();
       }
+      // Naming a board that is not here means we are looking in the wrong
+      // project, not that one should be conjured under that id. Creating it
+      // would drop an empty board where the real one was expected and hide the
+      // misrouting behind a canvas that merely looks new.
+      if (board_id && !(await store.hasBoard(board_id))) {
+        throw new Error(
+          `MindArt board ${board_id} does not exist under ${store.projectRoot}. ` +
+            "Pass project_dir for the project that owns it, or omit board_id to open the most recent board.",
+        );
+      }
       const board = await store.openBoard(board_id, title);
       return success(`Opened MindArt board "${board.title}" (${board.id}).`, {
         board,

@@ -123,6 +123,26 @@ describe("MindArtStore", () => {
     expect(created.title).toBe("New board");
   });
 
+  it("reports whether a board id resolves under the current project root", async () => {
+    await store.openBoard("board-present", "Present");
+
+    await expect(store.hasBoard("board-present")).resolves.toBe(true);
+    await expect(store.hasBoard("board-absent")).resolves.toBe(false);
+  });
+
+  it("does not see a board that lives under a different project root", async () => {
+    await store.openBoard("board-elsewhere", "Elsewhere");
+    const otherRoot = await mkdtemp(path.join(os.tmpdir(), "mindart-other-"));
+    try {
+      const other = new MindArtStore(otherRoot);
+      await other.initialize();
+
+      await expect(other.hasBoard("board-elsewhere")).resolves.toBe(false);
+    } finally {
+      await rm(otherRoot, { recursive: true, force: true });
+    }
+  });
+
   it("records a retryable error on both request and node", async () => {
     let board = await store.openBoard("board-error", "Error");
     board.root.children.push({

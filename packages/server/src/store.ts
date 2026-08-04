@@ -218,6 +218,16 @@ export class MindArtStore {
     return validateBoard(JSON.parse(raw) as Board);
   }
 
+  async hasBoard(boardId: string): Promise<boolean> {
+    try {
+      await readFile(this.boardFile(boardId), "utf8");
+      return true;
+    } catch (error) {
+      if (isMissingFile(error)) return false;
+      throw error;
+    }
+  }
+
   async updateBoard(boardId: string, patch: BoardPatch): Promise<Board> {
     const parsedPatch = BoardPatchSchema.parse(patch);
     return this.mutateBoard(boardId, (board) => {
