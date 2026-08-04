@@ -9,6 +9,7 @@ import {
   BoardSchema,
   GenerationRequestInputSchema,
 } from "./model.js";
+import { revealFile } from "./reveal.js";
 import {
   MAX_IMPORT_IMAGE_BASE64_LENGTH,
   MindArtStore,
@@ -217,6 +218,36 @@ export function registerMindArtTools(
     async ({ board_id, path }) => {
       const asset = await store.readAsset(board_id, path);
       return success(`Read asset ${asset.path}.`, asset);
+    },
+  );
+
+  registerAppTool(
+    server,
+    "mindart_reveal_asset",
+    {
+      title: "Reveal MindArt Asset",
+      description:
+        "Show a board image in the desktop file manager or open it in a browser. The canvas is sandboxed and cannot do either itself. This tool is called only by the canvas.",
+      inputSchema: z.object({
+        board_id: BoardIdSchema,
+        path: z.string().trim().min(1),
+        mode: z.enum(["finder", "browser"]),
+      }),
+      outputSchema: z.object({
+        path: z.string(),
+        mode: z.string(),
+      }),
+      _meta: appOnlyMeta,
+    },
+    async ({ board_id, path: assetPath, mode }) => {
+      // assetFilePath rejects anything outside this board's assets directory,
+      // which matters more than usual here: the result is handed to the OS.
+      const filePath = store.assetFilePath(board_id, assetPath);
+      await revealFile(filePath, mode);
+      return success(`Revealed ${assetPath} (${mode}).`, {
+        path: assetPath,
+        mode,
+      });
     },
   );
 

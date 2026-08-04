@@ -6,6 +6,8 @@ import { copyFile, mkdir, readFile, readdir, rename, stat, writeFile } from "nod
 import path from "node:path";
 import os from "node:os";
 import { existsSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 //#region \0rolldown/runtime.js
 var __create = Object.create;
 var __defProp = Object.defineProperty;
@@ -20505,6 +20507,19 @@ var MindArtStore = class {
 			nodeId
 		};
 	}
+	/**
+	* Resolve a board-relative asset to an absolute path, refusing anything that
+	* is not an image under this board's assets directory. Every caller that
+	* hands a path to the filesystem — or to the OS — goes through here.
+	*/
+	assetFilePath(boardId, assetPath) {
+		const normalized = assetPath.replaceAll("\\", "/");
+		if (!normalized.startsWith("assets/")) throw new Error("Only board assets can be read");
+		const filePath = resolveInside(this.boardDirectory(boardId), normalized);
+		const extension = path.extname(filePath).toLowerCase();
+		if (!MIME_TYPES[extension]) throw new Error(`Unsupported image type: ${extension}`);
+		return filePath;
+	}
 	async readAsset(boardId, assetPath) {
 		const boardDir = this.boardDirectory(boardId);
 		const normalized = assetPath.replaceAll("\\", "/");
@@ -20913,6 +20928,39 @@ function N3(Z, $, J, X, V) {
 	}, V);
 }
 //#endregion
+//#region ../server/src/reveal.ts
+var run = promisify(execFile);
+/**
+* Hand a file to the desktop so the user can see it at full size. The canvas
+* runs sandboxed and cannot reach the filesystem or spawn anything, so this has
+* to happen server-side.
+*
+* Callers must pass a path already validated as belonging to a board — the
+* argument reaches the OS.
+*/
+async function revealFile(filePath, mode, platform = process.platform) {
+	const [command, args] = revealCommand(filePath, mode, platform);
+	await run(command, args);
+}
+function revealCommand(filePath, mode, platform) {
+	if (platform === "darwin") return mode === "finder" ? ["open", ["-R", filePath]] : ["open", [
+		"-a",
+		"Safari",
+		filePath
+	]];
+	if (platform === "win32") return mode === "finder" ? ["explorer.exe", [`/select,${filePath}`]] : ["cmd.exe", [
+		"/c",
+		"start",
+		"",
+		pathToFileUrl(filePath)
+	]];
+	return mode === "finder" ? ["xdg-open", [path.dirname(filePath)]] : ["xdg-open", [pathToFileUrl(filePath)]];
+}
+function pathToFileUrl(filePath) {
+	const normalized = filePath.replaceAll("\\", "/");
+	return `file://${(normalized.startsWith("/") ? normalized : `/${normalized}`).split("/").map(encodeURIComponent).join("/")}`;
+}
+//#endregion
 //#region ../server/src/tools.ts
 var CANVAS_RESOURCE_URI = "ui://mindart/canvas.html";
 var appOnlyMeta = { ui: {
@@ -21043,6 +21091,26 @@ function registerMindArtTools(server, initialStore) {
 	}, async ({ board_id, path }) => {
 		const asset = await store.readAsset(board_id, path);
 		return success(`Read asset ${asset.path}.`, asset);
+	});
+	K3(server, "mindart_reveal_asset", {
+		title: "Reveal MindArt Asset",
+		description: "Show a board image in the desktop file manager or open it in a browser. The canvas is sandboxed and cannot do either itself. This tool is called only by the canvas.",
+		inputSchema: object$1({
+			board_id: BoardIdSchema,
+			path: string().trim().min(1),
+			mode: _enum(["finder", "browser"])
+		}),
+		outputSchema: object$1({
+			path: string(),
+			mode: string()
+		}),
+		_meta: appOnlyMeta
+	}, async ({ board_id, path: assetPath, mode }) => {
+		await revealFile(store.assetFilePath(board_id, assetPath), mode);
+		return success(`Revealed ${assetPath} (${mode}).`, {
+			path: assetPath,
+			mode
+		});
 	});
 	K3(server, "mindart_import_image", {
 		title: "Import Image Into MindArt",

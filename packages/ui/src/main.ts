@@ -214,6 +214,13 @@ appRoot.innerHTML = `
           <span>${icon("import")}添加图片子卡</span>
         </button>
         <div class="menu-separator" role="separator"></div>
+        <button type="button" role="menuitem" data-menu-action="reveal-finder">
+          <span>${icon("import")}在访达中显示</span>
+        </button>
+        <button type="button" role="menuitem" data-menu-action="reveal-browser">
+          <span>${icon("scan")}在浏览器中打开</span>
+        </button>
+        <div class="menu-separator" role="separator"></div>
         <button type="button" role="menuitem" data-menu-action="add-reference">
           <span>${icon("link")}添加参考图</span>
         </button>
@@ -1049,6 +1056,14 @@ async function loadImage(image: HTMLImageElement, attempt = 0): Promise<void> {
       mimeType: string;
       data: string;
     }>("mindart_read_asset", { board_id: boardId, path: asset });
+    // callTool answers {} when a result carries no structured content, and
+    // interpolating that yields "data:undefined;base64,undefined" — a src the
+    // browser rejects silently, with no error to retry on or report.
+    if (!result.mimeType || !result.data) {
+      throw new Error(
+        `Asset response for ${asset} carried no image data (mimeType=${String(result.mimeType)}, bytes=${result.data?.length ?? 0}).`,
+      );
+    }
     const dataUrl = `data:${result.mimeType};base64,${result.data}`;
     assetCache.set(`${boardId}\0${asset}`, dataUrl);
     if (board?.id !== boardId) return;
@@ -1373,7 +1388,10 @@ function openNodeContextMenu(event: MouseEvent, nodeId: string): void {
   contextMenuReturnFocus = card;
 
   const isRoot = nodeId === board.root.id;
+  const hasAsset = Boolean(findNode(board, nodeId)?.node.asset);
   setContextMenuItemVisible("add-parent", !isRoot);
+  setContextMenuItemVisible("reveal-finder", hasAsset);
+  setContextMenuItemVisible("reveal-browser", hasAsset);
   setContextMenuItemVisible("add-reference", !isRoot);
   setContextMenuItemVisible("focus", !isRoot && !mind.isFocusMode);
   setContextMenuItemVisible("cancel-focus", mind.isFocusMode);
@@ -1403,6 +1421,24 @@ function openImagePickerForNode(nodeId: string): void {
   imageFileInput.click();
 }
 
+async function revealNodeAsset(
+  nodeId: string,
+  mode: "finder" | "browser",
+): Promise<void> {
+  if (!board) return;
+  const asset = findNode(board, nodeId)?.node.asset;
+  if (!asset) {
+    showToast("这张图卡还没有图片");
+    return;
+  }
+  await ensureBoardBinding();
+  await bridge.callTool("mindart_reveal_asset", {
+    board_id: board.id,
+    path: asset,
+    mode,
+  });
+}
+
 async function runContextMenuAction(action: string): Promise<void> {
   if (!mind || !contextMenuNodeId) return;
   const nodeId = contextMenuNodeId;
@@ -1419,6 +1455,13 @@ async function runContextMenuAction(action: string): Promise<void> {
   }
   if (action === "add-image-child") {
     openImagePickerForNode(nodeId);
+    return;
+  }
+  if (action === "reveal-finder" || action === "reveal-browser") {
+    await revealNodeAsset(
+      nodeId,
+      action === "reveal-finder" ? "finder" : "browser",
+    );
     return;
   }
   if (action === "add-reference") {

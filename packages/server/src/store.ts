@@ -454,6 +454,24 @@ export class MindArtStore {
     return { board: updated, nodeId };
   }
 
+  /**
+   * Resolve a board-relative asset to an absolute path, refusing anything that
+   * is not an image under this board's assets directory. Every caller that
+   * hands a path to the filesystem — or to the OS — goes through here.
+   */
+  assetFilePath(boardId: string, assetPath: string): string {
+    const normalized = assetPath.replaceAll("\\", "/");
+    if (!normalized.startsWith("assets/")) {
+      throw new Error("Only board assets can be read");
+    }
+    const filePath = resolveInside(this.boardDirectory(boardId), normalized);
+    const extension = path.extname(filePath).toLowerCase();
+    if (!MIME_TYPES[extension]) {
+      throw new Error(`Unsupported image type: ${extension}`);
+    }
+    return filePath;
+  }
+
   async readAsset(boardId: string, assetPath: string): Promise<AssetResult> {
     const boardDir = this.boardDirectory(boardId);
     const normalized = assetPath.replaceAll("\\", "/");

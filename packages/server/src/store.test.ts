@@ -123,6 +123,23 @@ describe("MindArtStore", () => {
     expect(created.title).toBe("New board");
   });
 
+  it("resolves an asset path only inside the board it belongs to", async () => {
+    const board = await store.openBoard("board-paths", "Paths");
+
+    expect(store.assetFilePath(board.id, "assets/art.png")).toBe(
+      path.join(root, "mindart", board.id, "assets", "art.png"),
+    );
+    expect(() =>
+      store.assetFilePath(board.id, "../../../etc/passwd.png"),
+    ).toThrow("Only board assets can be read");
+    expect(() =>
+      store.assetFilePath(board.id, "assets/../../other/art.png"),
+    ).toThrow("escapes the MindArt board directory");
+    expect(() => store.assetFilePath(board.id, "assets/run.sh")).toThrow(
+      "Unsupported image type",
+    );
+  });
+
   it("reports whether a board id resolves under the current project root", async () => {
     await store.openBoard("board-present", "Present");
 
