@@ -104,6 +104,44 @@ export function registerMindArtTools(
 
   registerAppTool(
     server,
+    "mindart_bind_project",
+    {
+      title: "Bind MindArt Project",
+      description:
+        "Point the server at the project that owns a board and return that board as it currently stands. The canvas calls this after connecting, because a restarted server infers its project root from the working directory and a replayed tool result is a snapshot of the past. This tool is called only by the canvas.",
+      inputSchema: z.object({
+        board_id: BoardIdSchema,
+        project_dir: z.string().trim().min(1),
+      }),
+      outputSchema: z.object({
+        board: BoardSchema,
+        projectRoot: z.string(),
+      }),
+      // App-only. mindart_open_canvas would do the same work, but it renders
+      // the canvas resource, so calling it from inside the canvas opens
+      // another panel every time.
+      _meta: appOnlyMeta,
+    },
+    async ({ board_id, project_dir }) => {
+      if (path.resolve(project_dir) !== path.resolve(store.projectRoot)) {
+        store = new MindArtStore(project_dir);
+        await store.initialize();
+      }
+      if (!(await store.hasBoard(board_id))) {
+        throw new Error(
+          `MindArt board ${board_id} does not exist under ${store.projectRoot}.`,
+        );
+      }
+      const board = await store.getBoard(board_id);
+      return success(`Bound MindArt board "${board.title}".`, {
+        board,
+        projectRoot: store.projectRoot,
+      });
+    },
+  );
+
+  registerAppTool(
+    server,
     "mindart_request_generation",
     {
       title: "Queue MindArt Generation",

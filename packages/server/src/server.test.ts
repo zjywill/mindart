@@ -61,6 +61,23 @@ describe("MCP server", () => {
         resourceUri: CANVAS_RESOURCE_URI,
       });
 
+      // Anything the canvas calls on its own must be app-only. A tool that
+      // renders the canvas resource without that flag opens a second panel
+      // every time it is called from inside the canvas.
+      for (const name of [
+        "mindart_bind_project",
+        "mindart_read_asset",
+        "mindart_reveal_asset",
+        "mindart_update_board",
+      ]) {
+        const tool = tools.tools.find((candidate) => candidate.name === name);
+        expect(
+          (tool?._meta?.ui as { visibility?: string[] } | undefined)
+            ?.visibility,
+          `${name} must be app-only`,
+        ).toEqual(["app"]);
+      }
+
       const projectRoot = path.join(root, "active-project");
       const created = await client.callTool({
         name: "mindart_open_canvas",
@@ -92,6 +109,22 @@ describe("MCP server", () => {
       });
       expect(misrouted.isError).toBe(true);
       expect(JSON.stringify(misrouted.content)).toContain("board-not-here");
+
+      const bound = await client.callTool({
+        name: "mindart_bind_project",
+        arguments: { board_id: boardId, project_dir: projectRoot },
+      });
+      expect(bound.isError).toBeFalsy();
+      expect(bound.structuredContent).toMatchObject({
+        projectRoot,
+        board: { id: boardId, title: "Protocol" },
+      });
+
+      const unbindable = await client.callTool({
+        name: "mindart_bind_project",
+        arguments: { board_id: "board-not-here", project_dir: projectRoot },
+      });
+      expect(unbindable.isError).toBe(true);
 
       const imported = await client.callTool({
         name: "mindart_import_image",

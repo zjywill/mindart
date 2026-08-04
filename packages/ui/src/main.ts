@@ -1013,7 +1013,11 @@ function hydrateAssets(): void {
  * tool result without calling anything, so a freshly spawned server is still
  * rooted at whatever `process.cwd()` implied — usually the ~/Documents
  * fallback. Every board-scoped call would then read, and write, the wrong
- * directory. Re-open the board once per connection to rebind it.
+ * directory. Rebind once per connection.
+ *
+ * This must go through an app-only tool. mindart_open_canvas does the same
+ * work but renders the canvas resource, so calling it from inside the canvas
+ * opens a second panel — and then a third.
  */
 async function ensureBoardBinding(): Promise<void> {
   if (!boardBinding) {
@@ -1021,7 +1025,7 @@ async function ensureBoardBinding(): Promise<void> {
     const projectRoot = knownProjectRoot;
     if (!boardId || !projectRoot) return;
     boardBinding = bridge
-      .callTool<{ board?: Board }>("mindart_open_canvas", {
+      .callTool<{ board?: Board }>("mindart_bind_project", {
         board_id: boardId,
         project_dir: projectRoot,
       })
