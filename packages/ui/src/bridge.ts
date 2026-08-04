@@ -27,7 +27,25 @@ export class MindArtBridge {
   onToolInput: (input: Record<string, unknown>) => void = () => undefined;
   onError: (error: unknown) => void = console.error;
 
+  /**
+   * A resumed session gets its board back from a replayed tool result, and the
+   * host can deliver that before `connect()` resolves. Anything that reacts to
+   * the board by calling a tool would then race the connection, so every call
+   * waits on this first.
+   */
+  private readonly connected: Promise<void>;
+  private markConnected!: () => void;
+  private markUnavailable!: (error: unknown) => void;
+
   constructor() {
+    this.connected = new Promise<void>((resolve, reject) => {
+      this.markConnected = resolve;
+      this.markUnavailable = reject;
+    });
+    // Nothing awaits this until the first tool call; without a handler an
+    // early rejection would surface as an unhandled promise rejection.
+    this.connected.catch(() => undefined);
+
     this.app.ontoolinput = (params) => {
       this.onToolInput((params.arguments ?? {}) as Record<string, unknown>);
     };
@@ -42,7 +60,13 @@ export class MindArtBridge {
   }
 
   async connect(): Promise<void> {
-    await this.app.connect();
+    try {
+      await this.app.connect();
+    } catch (error) {
+      this.markUnavailable(error);
+      throw error;
+    }
+    this.markConnected();
     const context = this.app.getHostContext();
     if (context) this.applyHostContext(context);
   }
@@ -51,6 +75,7 @@ export class MindArtBridge {
     name: string,
     args: Record<string, unknown>,
   ): Promise<T> {
+    await this.connected;
     const result = await this.app.callServerTool({ name, arguments: args });
     if (result.isError) throw new Error(resultMessage(result));
     return (result.structuredContent ?? {}) as T;

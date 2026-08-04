@@ -267,6 +267,8 @@ let persistedRevision = 0;
 let refreshAfterSave = false;
 let inspectorRenderPending = false;
 let inspectorHistoryOpen = false;
+let knownProjectRoot: string | null = null;
+let boardBinding: Promise<void> | null = null;
 let pollTimer: number | undefined;
 let panelOpen = false;
 let importInFlight = false;
@@ -909,6 +911,9 @@ async function flushSave(): Promise<void> {
 
   const task = (async () => {
     try {
+      // Writing before the server is rebound would persist this board into the
+      // fallback project root instead of the one it came from.
+      await ensureBoardBinding();
       const result = await bridge.callTool<{ board: Board }>(
         "mindart_update_board",
         {
@@ -995,12 +1000,42 @@ function hydrateAssets(): void {
   });
 }
 
-async function loadImage(image: HTMLImageElement): Promise<void> {
+/**
+ * The server keeps its project root in memory and only ever sets it from
+ * `mindart_open_canvas`. A resumed session restores the canvas from a replayed
+ * tool result without calling anything, so a freshly spawned server is still
+ * rooted at whatever `process.cwd()` implied — usually the ~/Documents
+ * fallback. Every board-scoped call would then read, and write, the wrong
+ * directory. Re-open the board once per connection to rebind it.
+ */
+async function ensureBoardBinding(): Promise<void> {
+  if (!boardBinding) {
+    const boardId = board?.id;
+    const projectRoot = knownProjectRoot;
+    if (!boardId || !projectRoot) return;
+    boardBinding = bridge
+      .callTool("mindart_open_canvas", {
+        board_id: boardId,
+        project_dir: projectRoot,
+      })
+      .then(() => undefined)
+      .catch((error) => {
+        boardBinding = null;
+        throw error;
+      });
+  }
+  await boardBinding;
+}
+
+const ASSET_RETRY_DELAYS_MS = [400, 1200, 3000];
+
+async function loadImage(image: HTMLImageElement, attempt = 0): Promise<void> {
   if (!board) return;
   const boardId = board.id;
   const asset = image.dataset.asset;
   if (!asset) return;
   try {
+    await ensureBoardBinding();
     const result = await bridge.callTool<{
       path: string;
       mimeType: string;
@@ -1009,6 +1044,7 @@ async function loadImage(image: HTMLImageElement): Promise<void> {
     const dataUrl = `data:${result.mimeType};base64,${result.data}`;
     assetCache.set(`${boardId}\0${asset}`, dataUrl);
     if (board?.id !== boardId) return;
+    image.closest(".image-card")?.classList.remove("asset-error");
     appRoot
       .querySelectorAll<HTMLImageElement>(
         `img[data-asset="${CSS.escape(asset)}"]`,
@@ -1016,8 +1052,21 @@ async function loadImage(image: HTMLImageElement): Promise<void> {
       .forEach((target) => {
         target.src = dataUrl;
       });
-  } catch {
-    image.closest(".image-card")?.classList.add("asset-error");
+  } catch (error) {
+    // The observer unobserved this image before calling us, so without a retry
+    // one failure leaves the card broken for the rest of the session.
+    const delay = ASSET_RETRY_DELAYS_MS[attempt];
+    if (delay !== undefined && board?.id === boardId && image.isConnected) {
+      window.setTimeout(() => {
+        void loadImage(image, attempt + 1);
+      }, delay);
+      return;
+    }
+    const card = image.closest(".image-card");
+    card?.classList.add("asset-error");
+    // Swallowing this entirely is why "图片加载失败" was undiagnosable.
+    card?.setAttribute("title", errorMessage(error));
+    console.error(`mindart: failed to load ${asset}`, error);
   }
 }
 
@@ -1035,6 +1084,7 @@ function schedulePolling(): void {
       return;
     }
     try {
+      await ensureBoardBinding();
       const result = await bridge.callTool<{ board: Board }>(
         "mindart_get_board",
         { board_id: board.id },
@@ -1583,6 +1633,12 @@ inspectorClose.addEventListener("click", () => setPanelOpen(false));
 inspectorScrim.addEventListener("click", () => setPanelOpen(false));
 
 bridge.onResult = (payload: StructuredResult) => {
+  // mindart_open_canvas reports the root it resolved. On resume this replayed
+  // value is the only record of where the board lives, so keep it.
+  if (typeof payload.projectRoot === "string" && payload.projectRoot) {
+    if (payload.projectRoot !== knownProjectRoot) boardBinding = null;
+    knownProjectRoot = payload.projectRoot;
+  }
   const nextBoard = payload.board;
   if (nextBoard && typeof nextBoard === "object") {
     if (hasPendingSave()) {
