@@ -8,7 +8,7 @@
       "name": "mindart",
       "source": "./clients/claude-plugin",
       "description": "Mind-map style AI image generation with project-local genealogy.",
-      "version": "0.2.2",
+      "version": "0.3.0",
       "author": {
         "name": "MindArt Contributors"
       }

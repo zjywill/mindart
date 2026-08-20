@@ -20287,6 +20287,49 @@ function mergeEditableTree(currentRoot, incomingRoot) {
 	};
 	return visit(incomingRoot, true);
 }
+/**
+* Turn a list of source cards into the references a derived card carries.
+*
+* The tree parent is always reference 1 when it has an image of its own: that
+* is what makes a branch a genealogy rather than a filing cabinet. Everything
+* else becomes a numbered cross-branch reference with its own ref line. The
+* parent may also appear in `sources` by its real node id, which is how it
+* gets a usage note of its own — the same convention requestGeneration uses
+* for the list the canvas sends.
+*
+* Unknown or image-less sources throw rather than being skipped. A silently
+* dropped source is how a board ends up as a row of unrelated siblings, which
+* is exactly the failure this helper exists to prevent.
+*/
+function buildSourceReferences(nodes, parent, nodeId, sources) {
+	const refs = [];
+	const seen = /* @__PURE__ */ new Set();
+	const usageByNode = new Map(sources.map((source) => [source.nodeId, source.usage]));
+	if (parent.asset) {
+		refs.push({
+			order: 1,
+			source: "parent",
+			usage: usageByNode.get(parent.id) ?? ""
+		});
+		seen.add(parent.id);
+	}
+	for (const source of sources) {
+		if (seen.has(source.nodeId)) continue;
+		if (source.nodeId === nodeId) throw new Error("A card cannot be its own source");
+		const sourceNode = nodes.get(source.nodeId)?.node;
+		if (!sourceNode) throw new Error(`Source node not found: ${source.nodeId}`);
+		if (!sourceNode.asset) throw new Error(`Source node ${source.nodeId} has no image to reference yet`);
+		if (refs.length >= 5) throw new Error("A card can carry at most 5 reference images");
+		refs.push({
+			order: refs.length + 1,
+			source: sourceNode.id,
+			usage: source.usage,
+			refLineId: `ref-${sourceNode.id}-${nodeId}`
+		});
+		seen.add(sourceNode.id);
+	}
+	return refs;
+}
 var MindArtStore = class {
 	projectRoot;
 	mindartRoot;
@@ -20489,22 +20532,72 @@ var MindArtStore = class {
 		await mkdir(path.dirname(destination), { recursive: true });
 		if (sourcePath) await copyFile(sourcePath, destination);
 		else await writeFile(destination, imageData);
+		const updated = await this.mutateBoard(board.id, (draft) => {
+			const nodes = flattenBoard(draft.root);
+			const parent = options.parentNodeId ? nodes.get(options.parentNodeId)?.node : draft.root;
+			if (!parent) throw new Error(`Parent node not found: ${options.parentNodeId}`);
+			const refs = buildSourceReferences(nodes, parent, nodeId, options.sources ?? []);
+			const prompt = options.prompt?.trim();
+			parent.children.push({
+				id: nodeId,
+				title: options.title?.trim() || defaultTitle || "素材图",
+				status: "ready",
+				...prompt ? { prompt } : {},
+				asset: relativeAsset,
+				expanded: true,
+				children: [],
+				refs
+			});
+			return draft;
+		});
 		return {
-			board: await this.mutateBoard(board.id, (draft) => {
-				const nodes = flattenBoard(draft.root);
-				const parent = options.parentNodeId ? nodes.get(options.parentNodeId)?.node : draft.root;
-				if (!parent) throw new Error(`Parent node not found: ${options.parentNodeId}`);
-				parent.children.push({
-					id: nodeId,
-					title: options.title?.trim() || defaultTitle || "素材图",
-					status: "ready",
-					asset: relativeAsset,
-					expanded: true,
-					children: []
-				});
-				return draft;
-			}),
-			nodeId
+			board: updated,
+			nodeId,
+			refs: (flattenBoard(updated.root).get(nodeId)?.node)?.refs ?? []
+		};
+	}
+	/**
+	* Record where an existing card's image came from.
+	*
+	* In MindArt the tree parent *is* the primary source, so setting the primary
+	* source moves the card onto that branch. Everything else becomes a
+	* cross-branch reference. This is the repair path for a board whose cards
+	* were dropped in flat before anyone said how they relate.
+	*/
+	async linkSources(boardId, nodeId, options) {
+		const board = await this.mutateBoard(boardId, (draft) => {
+			const nodes = flattenBoard(draft.root);
+			const location = nodes.get(nodeId);
+			if (!location) throw new Error(`Node not found: ${nodeId}`);
+			if (!location.parent) throw new Error("The board root has no sources");
+			const originalParent = location.parent;
+			let parent = location.parent;
+			if (options.parentNodeId !== void 0 && options.parentNodeId !== parent.id) {
+				const nextParent = nodes.get(options.parentNodeId)?.node;
+				if (!nextParent) throw new Error(`Parent node not found: ${options.parentNodeId}`);
+				if (nextParent.id === nodeId) throw new Error("A card cannot be its own source");
+				if (flattenBoard(location.node).has(nextParent.id)) throw new Error(`Cannot move ${nodeId} under its own descendant ${nextParent.id}`);
+				parent.children = parent.children.filter((child) => child.id !== nodeId);
+				nextParent.children.push(location.node);
+				parent = nextParent;
+			}
+			const sources = options.sources ?? (location.node.refs ?? []).flatMap((reference) => {
+				if (reference.source !== "parent") return [{
+					nodeId: reference.source,
+					usage: reference.usage
+				}];
+				return parent.id === originalParent.id && reference.usage ? [{
+					nodeId: parent.id,
+					usage: reference.usage
+				}] : [];
+			});
+			location.node.refs = buildSourceReferences(nodes, parent, nodeId, sources);
+			return draft;
+		});
+		return {
+			board,
+			nodeId,
+			refs: (flattenBoard(board.root).get(nodeId)?.node)?.refs ?? []
 		};
 	}
 	/**
@@ -20980,6 +21073,30 @@ var appOnlyMeta = { ui: {
 	exclusivePanelKey: CANVAS_PANEL_KEY,
 	visibility: ["app"]
 } };
+/**
+* Every source image a card was made from, in the order it was fed to the
+* generator, each with what was taken from it. The tree parent may appear here
+* by its own node id to give it a usage note; it is always reference 1.
+*/
+var SourceListSchema = array(object$1({
+	node_id: string().trim().min(1),
+	usage: string().max(2e3).default("").describe("What this image contributes, e.g. \"keep the head and colours\" or \"match this icon style\". Written into the card so it can be regenerated from the canvas.")
+})).max(5);
+function toSourceInputs(sources) {
+	return sources.map((source) => ({
+		nodeId: source.node_id,
+		usage: source.usage
+	}));
+}
+/**
+* Spell the recorded lineage back to the model. A card with no sources is the
+* normal case for a file the user just supplied and a mistake for anything
+* generated, and the caller is the only one who can tell the two apart.
+*/
+function describeLineage(refs) {
+	if (refs.length === 0) return "No source images recorded. If this image was generated from cards on this board, call mindart_link_sources to record them.";
+	return `Sources: ${refs.map((reference) => reference.source === "parent" ? "its parent card" : reference.source).join(", ")}.`;
+}
 function success(message, structuredContent) {
 	return {
 		content: [{
@@ -21151,22 +21268,30 @@ function registerMindArtTools(server, initialStore) {
 	});
 	K3(server, "mindart_import_image", {
 		title: "Import Image Into MindArt",
-		description: "Import an uploaded image or local project image into a MindArt board as a ready image card. Provide image_data with file_name, or provide source_path.",
+		description: "Import an uploaded image or local project image into a MindArt board as a ready image card. Provide image_data with file_name, or provide source_path. A MindArt board is a genealogy of images, not a gallery, and one rule decides where a card belongs: its parent is the image you actually fed to the generator. So for an image you just generated, set parent_node_id to the card whose image you built on and list every card you fed in sources, in generator order, each with what you took from it. An edit of a card hangs off that card; another attempt at a result the user rejected hangs off that result's parent, beside it, because you fed its inputs rather than the result itself; variants from one prompt are siblings sharing a parent. Omit both only for an image with no source on the board, such as a file the user just supplied.",
 		inputSchema: object$1({
 			board_id: BoardIdSchema.optional(),
 			source_path: string().trim().min(1).optional(),
 			image_data: string().trim().min(1).max(MAX_IMPORT_IMAGE_BASE64_LENGTH).optional(),
 			file_name: string().trim().min(1).max(255).optional(),
 			mime_type: string().trim().min(1).max(100).optional(),
-			parent_node_id: string().trim().min(1).optional(),
+			parent_node_id: string().trim().min(1).optional().describe("Card this image was primarily derived from. It becomes the new card's parent and its first reference image. Defaults to the board root, which means the image has no source on the board."),
+			sources: SourceListSchema.optional().describe("Every card whose image fed this one, in generator order. Each becomes a numbered reference and draws a link back to its source card. Include parent_node_id here too, to record what was taken from it."),
+			prompt: string().trim().min(1).max(2e4).optional().describe("Instruction that produced this image. Recorded on the card so it can be regenerated from the canvas."),
 			title: string().trim().min(1).max(200).optional()
 		}),
 		outputSchema: object$1({
 			board: BoardSchema,
-			nodeId: string()
+			nodeId: string(),
+			refs: array(object$1({
+				order: number(),
+				source: string(),
+				usage: string(),
+				refLineId: string().optional()
+			}))
 		}),
 		_meta: canvasMeta
-	}, async ({ board_id, source_path, image_data, file_name, mime_type, parent_node_id, title }) => {
+	}, async ({ board_id, source_path, image_data, file_name, mime_type, parent_node_id, sources, prompt, title }) => {
 		if (Boolean(source_path) === Boolean(image_data)) throw new Error("Provide either image_data or source_path");
 		if (image_data && !file_name) throw new Error("file_name is required with image_data");
 		const result = await store.importImage({
@@ -21176,9 +21301,38 @@ function registerMindArtTools(server, initialStore) {
 			...file_name === void 0 ? {} : { fileName: file_name },
 			...mime_type === void 0 ? {} : { mimeType: mime_type },
 			...parent_node_id === void 0 ? {} : { parentNodeId: parent_node_id },
+			...sources === void 0 ? {} : { sources: toSourceInputs(sources) },
+			...prompt === void 0 ? {} : { prompt },
 			...title === void 0 ? {} : { title }
 		});
-		return success(`Imported image as node ${result.nodeId}.`, result);
+		return success(`Imported image as node ${result.nodeId}. ${describeLineage(result.refs)}`, result);
+	});
+	K3(server, "mindart_link_sources", {
+		title: "Link MindArt Image Sources",
+		description: "Record which cards an existing card's image came from. In MindArt the branch is the lineage, so parent_node_id moves the card onto the branch of the image it was built on, and sources records every source image with what was taken from each. Use this to repair a card that landed on the board without its sources, or when the user says one image was made from another.",
+		inputSchema: object$1({
+			board_id: BoardIdSchema,
+			node_id: string().trim().min(1),
+			parent_node_id: string().trim().min(1).optional().describe("Card this image was primarily derived from. Pass the board root id to detach the card from any source. Omit to leave the card where it is."),
+			sources: SourceListSchema.optional().describe("Every card whose image fed this one, in generator order. Replaces the card's existing references; omit to keep them, pass an empty array to clear them.")
+		}),
+		outputSchema: object$1({
+			board: BoardSchema,
+			nodeId: string(),
+			refs: array(object$1({
+				order: number(),
+				source: string(),
+				usage: string(),
+				refLineId: string().optional()
+			}))
+		}),
+		_meta: canvasMeta
+	}, async ({ board_id, node_id, parent_node_id, sources }) => {
+		const result = await store.linkSources(board_id, node_id, {
+			...parent_node_id === void 0 ? {} : { parentNodeId: parent_node_id },
+			...sources === void 0 ? {} : { sources: toSourceInputs(sources) }
+		});
+		return success(`Linked sources for node ${result.nodeId}. ${describeLineage(result.refs)}`, result);
 	});
 }
 //#endregion

@@ -51,6 +51,7 @@ describe("MCP server", () => {
           "mindart_update_board",
           "mindart_read_asset",
           "mindart_import_image",
+          "mindart_link_sources",
         ]),
       );
       const requestTool = tools.tools.find(

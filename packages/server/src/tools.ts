@@ -13,6 +13,7 @@ import { revealFile } from "./reveal.js";
 import {
   MAX_IMPORT_IMAGE_BASE64_LENGTH,
   MindArtStore,
+  type SourceInput,
 } from "./store.js";
 
 export const CANVAS_RESOURCE_URI = "ui://mindart/canvas.html";
@@ -40,6 +41,52 @@ const appOnlyMeta = {
     visibility: ["app"] as const,
   },
 };
+
+/**
+ * Every source image a card was made from, in the order it was fed to the
+ * generator, each with what was taken from it. The tree parent may appear here
+ * by its own node id to give it a usage note; it is always reference 1.
+ */
+const SourceListSchema = z
+  .array(
+    z.object({
+      node_id: z.string().trim().min(1),
+      usage: z
+        .string()
+        .max(2_000)
+        .default("")
+        .describe(
+          "What this image contributes, e.g. \"keep the head and colours\" or \"match this icon style\". Written into the card so it can be regenerated from the canvas.",
+        ),
+    }),
+  )
+  .max(5);
+
+function toSourceInputs(
+  sources: ReadonlyArray<{ node_id: string; usage: string }>,
+): SourceInput[] {
+  return sources.map((source) => ({
+    nodeId: source.node_id,
+    usage: source.usage,
+  }));
+}
+
+/**
+ * Spell the recorded lineage back to the model. A card with no sources is the
+ * normal case for a file the user just supplied and a mistake for anything
+ * generated, and the caller is the only one who can tell the two apart.
+ */
+function describeLineage(refs: ReadonlyArray<{ source: string }>): string {
+  if (refs.length === 0) {
+    return "No source images recorded. If this image was generated from cards on this board, call mindart_link_sources to record them.";
+  }
+  const sources = refs
+    .map((reference) =>
+      reference.source === "parent" ? "its parent card" : reference.source,
+    )
+    .join(", ");
+  return `Sources: ${sources}.`;
+}
 
 function success<T extends object>(
   message: string,
@@ -312,7 +359,11 @@ export function registerMindArtTools(
     {
       title: "Import Image Into MindArt",
       description:
-        "Import an uploaded image or local project image into a MindArt board as a ready image card. Provide image_data with file_name, or provide source_path.",
+        "Import an uploaded image or local project image into a MindArt board as a ready image card. Provide image_data with file_name, or provide source_path. " +
+        "A MindArt board is a genealogy of images, not a gallery, and one rule decides where a card belongs: its parent is the image you actually fed to the generator. " +
+        "So for an image you just generated, set parent_node_id to the card whose image you built on and list every card you fed in sources, in generator order, each with what you took from it. " +
+        "An edit of a card hangs off that card; another attempt at a result the user rejected hangs off that result's parent, beside it, because you fed its inputs rather than the result itself; variants from one prompt are siblings sharing a parent. " +
+        "Omit both only for an image with no source on the board, such as a file the user just supplied.",
       inputSchema: z.object({
         board_id: BoardIdSchema.optional(),
         source_path: z.string().trim().min(1).optional(),
@@ -324,12 +375,39 @@ export function registerMindArtTools(
           .optional(),
         file_name: z.string().trim().min(1).max(255).optional(),
         mime_type: z.string().trim().min(1).max(100).optional(),
-        parent_node_id: z.string().trim().min(1).optional(),
+        parent_node_id: z
+          .string()
+          .trim()
+          .min(1)
+          .optional()
+          .describe(
+            "Card this image was primarily derived from. It becomes the new card's parent and its first reference image. Defaults to the board root, which means the image has no source on the board.",
+          ),
+        sources: SourceListSchema.optional().describe(
+          "Every card whose image fed this one, in generator order. Each becomes a numbered reference and draws a link back to its source card. Include parent_node_id here too, to record what was taken from it.",
+        ),
+        prompt: z
+          .string()
+          .trim()
+          .min(1)
+          .max(20_000)
+          .optional()
+          .describe(
+            "Instruction that produced this image. Recorded on the card so it can be regenerated from the canvas.",
+          ),
         title: z.string().trim().min(1).max(200).optional(),
       }),
       outputSchema: z.object({
         board: BoardSchema,
         nodeId: z.string(),
+        refs: z.array(
+          z.object({
+            order: z.number(),
+            source: z.string(),
+            usage: z.string(),
+            refLineId: z.string().optional(),
+          }),
+        ),
       }),
       _meta: canvasMeta,
     },
@@ -340,6 +418,8 @@ export function registerMindArtTools(
       file_name,
       mime_type,
       parent_node_id,
+      sources,
+      prompt,
       title,
     }) => {
       if (Boolean(source_path) === Boolean(image_data)) {
@@ -357,9 +437,66 @@ export function registerMindArtTools(
         ...(parent_node_id === undefined
           ? {}
           : { parentNodeId: parent_node_id }),
+        ...(sources === undefined ? {} : { sources: toSourceInputs(sources) }),
+        ...(prompt === undefined ? {} : { prompt }),
         ...(title === undefined ? {} : { title }),
       });
-      return success(`Imported image as node ${result.nodeId}.`, result);
+      return success(
+        `Imported image as node ${result.nodeId}. ${describeLineage(result.refs)}`,
+        result,
+      );
+    },
+  );
+
+  registerAppTool(
+    server,
+    "mindart_link_sources",
+    {
+      title: "Link MindArt Image Sources",
+      description:
+        "Record which cards an existing card's image came from. " +
+        "In MindArt the branch is the lineage, so parent_node_id moves the card onto the branch of the image it was built on, and sources records every source image with what was taken from each. " +
+        "Use this to repair a card that landed on the board without its sources, or when the user says one image was made from another.",
+      inputSchema: z.object({
+        board_id: BoardIdSchema,
+        node_id: z.string().trim().min(1),
+        parent_node_id: z
+          .string()
+          .trim()
+          .min(1)
+          .optional()
+          .describe(
+            "Card this image was primarily derived from. Pass the board root id to detach the card from any source. Omit to leave the card where it is.",
+          ),
+        sources: SourceListSchema.optional().describe(
+          "Every card whose image fed this one, in generator order. Replaces the card's existing references; omit to keep them, pass an empty array to clear them.",
+        ),
+      }),
+      outputSchema: z.object({
+        board: BoardSchema,
+        nodeId: z.string(),
+        refs: z.array(
+          z.object({
+            order: z.number(),
+            source: z.string(),
+            usage: z.string(),
+            refLineId: z.string().optional(),
+          }),
+        ),
+      }),
+      _meta: canvasMeta,
+    },
+    async ({ board_id, node_id, parent_node_id, sources }) => {
+      const result = await store.linkSources(board_id, node_id, {
+        ...(parent_node_id === undefined
+          ? {}
+          : { parentNodeId: parent_node_id }),
+        ...(sources === undefined ? {} : { sources: toSourceInputs(sources) }),
+      });
+      return success(
+        `Linked sources for node ${result.nodeId}. ${describeLineage(result.refs)}`,
+        result,
+      );
     },
   );
 }
