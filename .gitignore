@@ -1,6 +1,7 @@
 node_modules/
 packages/*/dist/
 packages/*/coverage/
+output/
 .corepack/
 .DS_Store
 *.log
