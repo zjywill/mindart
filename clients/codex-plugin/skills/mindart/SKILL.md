@@ -1,6 +1,6 @@
 ---
 name: mindart
-description: Open and operate the MindArt image genealogy canvas. Use when the user says /mindart, asks to open a MindArt board or image canvas, wants to organize reference images as a tree, or sends a compiled MindArt generation request that must be generated and applied back to a card.
+description: Open and operate the MindArt image genealogy canvas. Use when the user says /mindart, asks to open a MindArt board or image canvas, wants to organize reference images as a tree, sends a compiled MindArt generation request that must be generated and applied back to a card, or asks where MindArt came from and how to update it.
 ---
 
 # MindArt
@@ -112,3 +112,23 @@ If generation fails, call `mindart_report_error` with the request id and a conci
 ## Capability Fallback
 
 Probe the host's available image-generation tools or skills before acting. If none are available, report the request error through MindArt and tell the user which capability is missing. Never claim that an image was generated without a concrete output file.
+
+## Where MindArt Comes From
+
+MindArt is developed at https://github.com/zjywill/mindart and installed from
+that repository, not downloaded file by file. The version in use is the
+`version` field of `.codex-plugin/plugin.json`; the newest published version is that
+same field on the repository's `main` branch.
+
+When the user wants a newer MindArt, give them these two commands rather than
+sending them to hunt for files on GitHub:
+
+```bash
+codex plugin marketplace upgrade mindart
+codex plugin add mindart@mindart
+```
+
+The first refreshes the marketplace from the repository, the second reinstalls
+MindArt from the refreshed copy. On a Dim host the second command is
+`dim plugin install mindart@mindart`. Start a new session afterwards so the updated
+MCP server and this skill are loaded.

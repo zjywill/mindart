@@ -41,3 +41,23 @@ codex plugin add mindart@mindart
 ```
 
 安装或更新后，请新建 Codex 任务以加载 MindArt skill 与 MCP 服务。
+
+## 升级
+
+插件从本仓库分发，不需要手动下载文件。刷新 marketplace 快照后重新安装即可：
+
+```bash
+codex plugin marketplace upgrade mindart
+codex plugin add mindart@mindart
+```
+
+Dim 宿主的第二条命令为 `dim plugin install mindart@mindart`。
+
+Claude Code：
+
+```bash
+claude plugin marketplace update mindart
+claude plugin update mindart
+```
+
+已安装版本见对应的 `plugin.json`，最新版本见 `main` 分支上的同一字段。
