@@ -1,5 +1,3 @@
-import MindElixir from "mind-elixir";
-import "mind-elixir/style.css";
 import demoBodyUrl from "./assets/demo-body.jpg";
 import demoPaletteUrl from "./assets/demo-palette.jpg";
 import { bindComposedInput } from "./composed-input.js";
@@ -15,49 +13,34 @@ import {
   Maximize2,
   PanelRightClose,
   PanelRightOpen,
+  Pencil,
   Plus,
   RefreshCw,
   Scan,
   Sparkles,
   Trash2,
   X,
+  ZoomIn,
+  ZoomOut,
   createElement,
   type IconNode,
 } from "lucide";
 import { MindArtBridge, type StructuredResult } from "./bridge.js";
+import { CanvasController } from "./canvas.js";
 import { buildGenerationInput } from "./compile.js";
-import {
-  directBranchPath,
-  directSubBranchPath,
-  referenceArrowHandles,
-  TREE_NODE_GAP_X,
-} from "./connections.js";
+import { cardLinkAnchors, cardLinkPath } from "./connections.js";
 import {
   cloneBoard,
-  findNode,
-  flattenBoard,
+  findCard,
+  lineageOf,
   normalizeClientBoard,
-  referencesForNode,
+  referencesForCard,
   type Board,
-  type BoardNode,
+  type BoardCard,
   type GenerationRecord,
 } from "./model.js";
 import "./styles.css";
 
-type MindElixirInstance = InstanceType<typeof MindElixir>;
-type MindElixirData = ReturnType<MindElixirInstance["getData"]>;
-type MindNodeObj = MindElixirData["nodeData"];
-type MindArrow = NonNullable<MindElixirData["arrows"]>[number];
-type MindOperation = {
-  name: string;
-  obj: {
-    id?: string;
-    from?: string;
-    to?: string;
-    label?: string;
-  };
-};
-const DOWN_DIRECTION = 3 as const;
 const MAX_IMPORT_FILE_BYTES = 20 * 1024 * 1024;
 const SUPPORTED_IMAGE_EXTENSIONS = new Set([
   "apng",
@@ -78,37 +61,11 @@ const SUPPORTED_IMAGE_TYPES = new Set([
   "image/svg+xml",
   "image/webp",
 ]);
-const MINDART_THEME = {
-  name: "MindArt",
-  type: "dark" as const,
-  generateMainBranch: directBranchPath,
-  generateSubBranch: directSubBranchPath,
-  palette: Array.from({ length: 10 }, () => "var(--mindart-muted)"),
-  cssVar: {
-    "--node-gap-x": `${TREE_NODE_GAP_X}px`,
-    "--node-gap-y": "10px",
-    "--main-gap-x": "76px",
-    "--main-gap-y": "28px",
-    "--main-color": "var(--mindart-muted)",
-    "--main-bgcolor": "transparent",
-    "--main-bgcolor-transparent": "transparent",
-    "--main-border": "0",
-    "--color": "var(--mindart-muted)",
-    "--bgcolor": "transparent",
-    "--selected": "var(--mindart-focus)",
-    "--accent-color": "var(--mindart-link)",
-    "--root-color": "var(--mindart-text)",
-    "--root-bgcolor": "transparent",
-    "--root-border-color": "transparent",
-    "--root-radius": "8px",
-    "--main-radius": "8px",
-    "--topic-padding": "0",
-    "--panel-color": "var(--mindart-text)",
-    "--panel-bgcolor": "var(--mindart-surface)",
-    "--panel-border-color": "var(--mindart-border)",
-    "--map-padding": "72px 96px",
-  },
-};
+
+/** Card footprint used for placement; must stay in step with the server's. */
+const CARD_SLOT_WIDTH = 340;
+const CARD_SLOT_HEIGHT = 560;
+const GENERATION_CARD_WIDTH = 288;
 
 const appRoot = document.querySelector<HTMLDivElement>("#app")!;
 if (!appRoot) throw new Error("MindArt root element is missing");
@@ -125,12 +82,15 @@ const iconNodes = {
   maximize: Maximize2,
   panelClose: PanelRightClose,
   panelOpen: PanelRightOpen,
+  pencil: Pencil,
   plus: Plus,
   refresh: RefreshCw,
   scan: Scan,
   sparkles: Sparkles,
   trash: Trash2,
   x: X,
+  zoomIn: ZoomIn,
+  zoomOut: ZoomOut,
 } satisfies Record<string, IconNode>;
 
 type IconName = keyof typeof iconNodes;
@@ -158,6 +118,8 @@ appRoot.innerHTML = `
         <span id="save-state" class="save-state" role="status" aria-live="polite"></span>
       </div>
       <div class="toolbar-panel toolbar-actions">
+        <button class="icon-button" id="zoom-out-button" type="button" aria-label="缩小" title="缩小">${icon("zoomOut")}</button>
+        <button class="icon-button" id="zoom-in-button" type="button" aria-label="放大" title="放大">${icon("zoomIn")}</button>
         <button class="icon-button" id="fit-button" type="button" aria-label="适应画板" title="适应画板">${icon("scan")}</button>
         <button class="icon-button" id="fullscreen-button" type="button" aria-label="切换全屏" title="切换全屏">${icon("maximize")}</button>
         <span class="toolbar-divider" aria-hidden="true"></span>
@@ -167,11 +129,15 @@ appRoot.innerHTML = `
 
     <main class="workspace">
       <section id="mindart-canvas" class="canvas-region" aria-label="MindArt 图像谱系画板">
-        <div id="mind-map" class="mind-map"></div>
+        <div id="canvas-layer" class="canvas-layer">
+          <svg id="edge-layer" class="edge-layer" aria-hidden="true"></svg>
+          <div id="card-layer" class="card-layer"></div>
+        </div>
         <div class="canvas-shade" aria-hidden="true"></div>
         <div id="canvas-empty" class="canvas-empty" hidden>
           ${icon("imagePlus", "empty-icon")}
           <strong>暂无图卡</strong>
+          <span>双击画布新建图卡，或拖入图片</span>
         </div>
       </section>
       <input
@@ -202,16 +168,15 @@ appRoot.innerHTML = `
       </aside>
 
       <div id="node-context-menu" class="node-context-menu" role="menu" aria-label="图卡操作" hidden>
-        <button type="button" role="menuitem" data-menu-action="add-child">
-          <span>${icon("sparkles")}添加子级图卡</span>
+        <button type="button" role="menuitem" data-menu-action="derive">
+          <span>${icon("sparkles")}派生新图卡</span>
           <kbd>Tab</kbd>
         </button>
-        <button type="button" role="menuitem" data-menu-action="add-parent">
-          <span>${icon("imagePlus")}插入父级图卡</span>
-          <kbd>Ctrl + Enter</kbd>
+        <button type="button" role="menuitem" data-menu-action="edit-fork">
+          <span>${icon("pencil")}编辑生成新图</span>
         </button>
         <button type="button" role="menuitem" data-menu-action="add-image-child">
-          <span>${icon("import")}添加图片子卡</span>
+          <span>${icon("import")}导入衍生图</span>
         </button>
         <div class="menu-separator" role="separator"></div>
         <button type="button" role="menuitem" data-menu-action="reveal-finder">
@@ -225,10 +190,10 @@ appRoot.innerHTML = `
           <span>${icon("link")}添加参考图</span>
         </button>
         <button type="button" role="menuitem" data-menu-action="focus">
-          <span>${icon("scan")}专注此分支</span>
+          <span>${icon("scan")}高亮血缘</span>
         </button>
         <button type="button" role="menuitem" data-menu-action="cancel-focus">
-          <span>${icon("scan")}退出专注</span>
+          <span>${icon("scan")}取消高亮</span>
         </button>
         <button type="button" class="danger-menu-item" role="menuitem" data-menu-action="delete">
           <span>${icon("trash")}删除图卡</span>
@@ -241,7 +206,12 @@ appRoot.innerHTML = `
 `;
 
 const bridge = new MindArtBridge();
-const mapElement = document.querySelector<HTMLDivElement>("#mind-map")!;
+const canvasRegion =
+  document.querySelector<HTMLElement>("#mindart-canvas")!;
+const canvasLayer = document.querySelector<HTMLDivElement>("#canvas-layer")!;
+const cardLayer = document.querySelector<HTMLDivElement>("#card-layer")!;
+const edgeLayer = document.querySelector<SVGSVGElement>("#edge-layer")!;
+const canvasEmpty = document.querySelector<HTMLDivElement>("#canvas-empty")!;
 const inspector = document.querySelector<HTMLElement>("#inspector")!;
 const inspectorTitle = document.querySelector<HTMLElement>("#inspector-title")!;
 const inspectorContent =
@@ -262,10 +232,14 @@ const inspectorClose =
 const inspectorScrim =
   document.querySelector<HTMLButtonElement>("#inspector-scrim")!;
 
+const canvas = new CanvasController(canvasRegion, canvasLayer);
+
 let board: Board | null = null;
 let selectedNodeId: string | null = null;
 let referenceTargetId: string | null = null;
-let mind: MindElixirInstance | null = null;
+let lineageFocusId: string | null = null;
+let framedBoardId: string | null = null;
+let framedAt = 0;
 let saveTimer: number | undefined;
 let saveInFlight: Promise<void> | null = null;
 let saveRequested = false;
@@ -283,6 +257,7 @@ let fileDragDepth = 0;
 let contextMenuNodeId: string | null = null;
 let contextMenuReturnFocus: HTMLElement | null = null;
 let pendingImportParentNodeId: string | null = null;
+let edgeFrame: number | undefined;
 const assetCache = new Map<string, string>();
 let assetObserver: IntersectionObserver | null = null;
 
@@ -307,8 +282,8 @@ function escapeHtml(value: string): string {
     .replaceAll("'", "&#039;");
 }
 
-function statusLabel(node: BoardNode): { label: string; icon: IconName } {
-  switch (node.status) {
+function statusLabel(card: BoardCard): { label: string; icon: IconName } {
+  switch (card.status) {
     case "queued":
       return { label: "排队中", icon: "clock" };
     case "generating":
@@ -322,48 +297,46 @@ function statusLabel(node: BoardNode): { label: string; icon: IconName } {
   }
 }
 
-function renderCard(node: BoardNode, isRoot: boolean): string {
-  if (isRoot) {
-    return `
-      <article class="root-card" data-node-id="${escapeHtml(node.id)}" tabindex="0" aria-haspopup="menu" aria-controls="node-context-menu">
-        <div class="root-icon">${icon("sparkles")}</div>
-        <span class="root-title">${escapeHtml(node.title)}</span>
-      </article>
-    `;
-  }
+function isReadyCard(card: BoardCard): boolean {
+  return Boolean(card.asset) && card.status === "ready";
+}
 
-  const state = statusLabel(node);
-  const references = board ? referencesForNode(board, node) : [];
+function newNodeId(): string {
+  return `node-${crypto.randomUUID().slice(0, 10)}`;
+}
+
+function renderCard(card: BoardCard): string {
+  const state = statusLabel(card);
+  const references = board ? referencesForCard(board, card) : [];
   const referenceThumbs = references
-    .map(({ sourceNode, reference }) => {
-      const thumbnail = sourceNode.asset
-        ? `<img data-asset="${escapeHtml(sourceNode.asset)}" alt="" loading="lazy" />`
+    .map(({ sourceCard, reference }) => {
+      const thumbnail = sourceCard.asset
+        ? `<img data-asset="${escapeHtml(sourceCard.asset)}" alt="" loading="lazy" />`
         : icon("imagePlus", "reference-placeholder-icon");
       return `
-        <button type="button" class="reference-thumb" data-action="reference-detail" title="${escapeHtml(reference.usage || sourceNode.title)}" aria-label="图${reference.order}：${escapeHtml(sourceNode.title)}">
+        <button type="button" class="reference-thumb" data-action="reference-detail" title="${escapeHtml(reference.usage || sourceCard.title)}" aria-label="图${reference.order}：${escapeHtml(sourceCard.title)}">
           ${thumbnail}
           <span>图${reference.order}</span>
         </button>
       `;
     })
     .join("");
-  const media = node.asset
-    ? `<img class="card-image" data-asset="${escapeHtml(node.asset)}" alt="${escapeHtml(node.title)}" loading="lazy" />`
-    : `<div class="image-placeholder">${icon(node.status === "error" ? "alert" : "imagePlus", "placeholder-icon")}<strong>${node.status === "error" ? "生成失败" : node.status === "generating" ? "正在生成图片" : node.status === "queued" ? "等待开始生成" : "输入提示词生成图片"}</strong>${node.error ? `<span>${escapeHtml(node.error)}</span>` : ""}</div>`;
+  const media = card.asset
+    ? `<img class="card-image" data-asset="${escapeHtml(card.asset)}" alt="${escapeHtml(card.title)}" loading="lazy" />`
+    : `<div class="image-placeholder">${icon(card.status === "error" ? "alert" : "imagePlus", "placeholder-icon")}<strong>${card.status === "error" ? "生成失败" : card.status === "generating" ? "正在生成图片" : card.status === "queued" ? "等待开始生成" : "输入提示词生成图片"}</strong>${card.error ? `<span>${escapeHtml(card.error)}</span>` : ""}</div>`;
   const historyCount = board
-    ? Object.values(board.requests).filter((request) => request.nodeId === node.id)
+    ? Object.values(board.requests).filter((request) => request.nodeId === card.id)
         .length
     : 0;
-  const isReady = Boolean(node.asset) && node.status === "ready";
 
-  if (isReady) {
+  if (isReadyCard(card)) {
     return `
-      <article class="image-card ready-card status-ready" data-node-id="${escapeHtml(node.id)}" tabindex="0" aria-label="${escapeHtml(node.title || "未命名图卡")}，${state.label}" aria-haspopup="menu" aria-controls="node-context-menu">
+      <article class="image-card ready-card status-ready" data-node-id="${escapeHtml(card.id)}" tabindex="0" aria-label="${escapeHtml(card.title || "未命名图卡")}，${state.label}" aria-haspopup="menu" aria-controls="node-context-menu">
         <header class="card-header">
-          <input class="card-title-input" data-action="title" value="${escapeHtml(node.title)}" maxlength="200" aria-label="图卡标题" />
+          <input class="card-title-input" data-action="title" value="${escapeHtml(card.title)}" maxlength="200" aria-label="图卡标题" />
           <div class="card-actions">
             ${historyCount ? `<button type="button" class="card-icon-button" data-action="history" aria-label="查看 ${historyCount} 条生成记录" title="生成历史">${icon("history")}<span>${historyCount}</span></button>` : ""}
-            <button type="button" class="card-icon-button" data-action="add-reference" aria-label="将其他图片添加为参考" title="添加参考">${icon("link")}</button>
+            <button type="button" class="card-icon-button" data-action="edit-fork" aria-label="编辑生成新图" title="编辑生成新图">${icon("pencil")}</button>
           </div>
         </header>
         <div class="card-media">${media}</div>
@@ -372,10 +345,10 @@ function renderCard(node: BoardNode, isRoot: boolean): string {
   }
 
   return `
-    <article class="image-card generation-card status-${node.status ?? "draft"}" data-node-id="${escapeHtml(node.id)}" tabindex="0" aria-label="${escapeHtml(node.title || "未命名图卡")}，${state.label}" aria-haspopup="menu" aria-controls="node-context-menu">
+    <article class="image-card generation-card status-${card.status ?? "draft"}" data-node-id="${escapeHtml(card.id)}" tabindex="0" aria-label="${escapeHtml(card.title || "未命名图卡")}，${state.label}" aria-haspopup="menu" aria-controls="node-context-menu">
       <header class="card-header">
-        <div class="generation-heading">${icon("imagePlus", "generation-type-icon")}<input class="card-title-input" data-action="title" value="${escapeHtml(node.title)}" maxlength="200" aria-label="图卡标题" /></div>
-        ${node.status && node.status !== "draft" ? `<span class="status-pill">${icon(state.icon, state.icon === "loading" ? "status-icon spin" : "status-icon")}${state.label}</span>` : ""}
+        <div class="generation-heading">${icon("imagePlus", "generation-type-icon")}<input class="card-title-input" data-action="title" value="${escapeHtml(card.title)}" maxlength="200" aria-label="图卡标题" /></div>
+        ${card.status && card.status !== "draft" ? `<span class="status-pill">${icon(state.icon, state.icon === "loading" ? "status-icon spin" : "status-icon")}${state.label}</span>` : ""}
       </header>
       <div class="generator-surface">
         <div class="card-media">${media}</div>
@@ -384,11 +357,11 @@ function renderCard(node: BoardNode, isRoot: boolean): string {
             ${referenceThumbs}
             <button type="button" class="reference-add" data-action="add-reference" aria-label="添加参考图" title="添加参考图">${icon("plus", "chip-icon")}</button>
           </div>
-          <label class="sr-only" for="prompt-${escapeHtml(node.id)}">生成提示词</label>
-          <textarea id="prompt-${escapeHtml(node.id)}" class="card-prompt" data-action="prompt" rows="3" placeholder="描述你想生成的画面…">${escapeHtml(node.prompt ?? "")}</textarea>
+          <label class="sr-only" for="prompt-${escapeHtml(card.id)}">生成提示词</label>
+          <textarea id="prompt-${escapeHtml(card.id)}" class="card-prompt" data-action="prompt" rows="3" placeholder="描述你想生成的画面…">${escapeHtml(card.prompt ?? "")}</textarea>
           <footer class="card-footer">
             <button type="button" class="history-button" data-action="history" aria-label="查看生成历史">${icon("history")}<span>生成历史${historyCount ? ` · ${historyCount}` : ""}</span></button>
-            <button type="button" class="generate-button" data-action="generate">${icon(node.status === "error" ? "refresh" : "sparkles")}<span>${node.status === "error" ? "重试" : node.status === "queued" || node.status === "generating" ? "再次生成" : "生成"}</span></button>
+            <button type="button" class="generate-button" data-action="generate">${icon(card.status === "error" ? "refresh" : "sparkles")}<span>${card.status === "error" ? "重试" : card.status === "queued" || card.status === "generating" ? "再次生成" : "生成"}</span></button>
           </footer>
         </div>
       </div>
@@ -396,92 +369,25 @@ function renderCard(node: BoardNode, isRoot: boolean): string {
   `;
 }
 
-function nodeToMindData(node: BoardNode, isRoot = false): MindNodeObj {
-  return {
-    id: node.id,
-    topic: node.title,
-    expanded: node.expanded ?? true,
-    dangerouslySetInnerHTML: renderCard(node, isRoot),
-    metadata: { mindart: true },
-    children: node.children.map((child) => nodeToMindData(child)),
-  };
-}
-
-function boardToMindData(current: Board): MindElixirData {
-  const nodeOrder = new Map(
-    Array.from(flattenBoard(current.root).keys()).map((id, index) => [id, index]),
-  );
-
-  return {
-    nodeData: nodeToMindData(current.root, true),
-    direction: DOWN_DIRECTION,
-    arrows: current.refLines.map((line) => {
-      const handles = referenceArrowHandles(
-        nodeOrder.get(line.from) ?? 0,
-        nodeOrder.get(line.to) ?? 0,
-      );
-
-      return {
-        id: line.id,
-        from: line.from,
-        to: line.to,
-        label: "",
-        bidirectional: false,
-        ...handles,
-        style: {
-          stroke: "var(--mindart-link)",
-          labelColor: "var(--mindart-text)",
-          strokeWidth: 2,
-          strokeDasharray: "0",
-          strokeLinecap: "round",
-        },
-      };
-    }),
-  };
-}
-
 function renderBoard(nextBoard: Board): void {
   board = normalizeClientBoard(cloneBoard(nextBoard));
   boardTitleInput.value = board.title;
-  const data = boardToMindData(board);
-
-  if (!mind) {
-    mind = new MindElixir({
-      el: mapElement,
-      direction: DOWN_DIRECTION,
-      toolBar: false,
-      keypress: {
-        Tab: () => {
-          void addNamedChild(mind?.currentNode ?? undefined);
-        },
-        Enter: (event: KeyboardEvent) => {
-          if (event.ctrlKey || event.metaKey) {
-            void insertNamedParent(mind?.currentNode ?? undefined);
-          } else if (event.shiftKey) {
-            void mind?.insertSibling("before");
-          } else {
-            void mind?.insertSibling("after");
-          }
-        },
-      },
-      draggable: true,
-      editable: true,
-      overflowHidden: false,
-      contextMenu: false,
-      theme: MINDART_THEME,
-      newTopicName: "新图卡",
-    });
-    mind.init(data);
-    bindMindEvents(mind);
-    window.setTimeout(frameInitialView, 50);
-  } else {
-    mind.refresh(data);
+  if (selectedNodeId && !findCard(board, selectedNodeId)) {
+    selectedNodeId = null;
+  }
+  if (lineageFocusId && !findCard(board, lineageFocusId)) {
+    lineageFocusId = null;
   }
 
-  bindCardControlKeys();
+  renderCanvas();
   renderInspector(inspectorHistoryOpen, true);
   hydrateAssets();
   schedulePolling();
+  if (framedBoardId !== board.id) {
+    framedBoardId = board.id;
+    framedAt = performance.now();
+    window.setTimeout(fitToBoard, 50);
+  }
   void bridge.setModelContext({
     mindart: {
       boardId: board.id,
@@ -496,134 +402,242 @@ function renderBoard(nextBoard: Board): void {
   });
 }
 
-function frameInitialView(): void {
-  if (!mind) return;
-  if (window.innerWidth < 760) {
-    mind.scale(0.58);
-    mind.toCenter();
-    return;
-  }
-  const preferredScale = Math.min(0.82, Math.max(0.64, window.innerHeight / 1100));
-  mind.scale(preferredScale);
-  mind.toCenter();
-  mind.move(-132, 34);
+function renderCanvas(): void {
+  if (!board) return;
+  canvasEmpty.hidden = board.nodes.length > 0;
+  cardLayer.innerHTML = board.nodes
+    .map(
+      (card) => `
+        <div class="canvas-node" data-canvas-node="${escapeHtml(card.id)}" style="left: ${card.x}px; top: ${card.y}px;">
+          ${renderCard(card)}
+        </div>
+      `,
+    )
+    .join("");
+  applyCanvasState();
+  scheduleEdgeDraw();
 }
 
-function bindMindEvents(instance: MindElixirInstance): void {
-  instance.bus.addListener("selectNodes", (nodes: MindNodeObj[]) => {
-    const first = nodes[0];
-    if (!first) return;
-    handleNodeSelection(first.id);
-  });
-  instance.bus.addListener("operation", (operation: unknown) => {
-    void handleMindOperation(operation);
-  });
-  instance.bus.addListener("expandNode", () => {
-    rehydrateMapView();
-  });
+/** Selection and lineage classes without a full re-render. */
+function applyCanvasState(): void {
+  if (!board) return;
+  const lineage = lineageFocusId ? lineageOf(board, lineageFocusId) : null;
+  canvasRegion.classList.toggle("lineage-mode", lineage !== null);
+  cardLayer
+    .querySelectorAll<HTMLElement>("[data-canvas-node]")
+    .forEach((node) => {
+      const id = node.dataset.canvasNode!;
+      node.classList.toggle("is-selected", id === selectedNodeId);
+      node.classList.toggle("is-dimmed", lineage !== null && !lineage.has(id));
+    });
 }
 
-async function handleMindOperation(rawOperation: unknown): Promise<void> {
-  if (!board || !mind) return;
-  const operation = rawOperation as MindOperation;
-  if (operation.name === "createArrow") {
-    const arrow = operation.obj as MindArrow;
-    addReference(String(arrow.to), String(arrow.from), "");
-    return;
-  }
-  if (operation.name === "removeArrow") {
-    const line = board.refLines.find((item) => item.id === operation.obj.id);
-    if (line) removeReference(line.to, line.from);
-    return;
-  }
-  if (operation.name === "finishEditArrowLabel") {
-    const arrow = operation.obj as MindArrow;
-    updateReferenceUsage(
-      String(arrow.to),
-      String(arrow.from),
-      arrow.label === "+" ? "" : arrow.label,
-    );
-    return;
-  }
-  if (operation.name === "reshapeArrow") return;
+function cardShell(nodeId: string): HTMLElement | null {
+  return cardLayer.querySelector<HTMLElement>(
+    `[data-canvas-node="${CSS.escape(nodeId)}"]`,
+  );
+}
 
-  queueMicrotask(() => {
-    syncTreeFromMind();
-    queueSave(false, true);
+function scheduleEdgeDraw(): void {
+  if (edgeFrame !== undefined) return;
+  edgeFrame = window.requestAnimationFrame(() => {
+    edgeFrame = undefined;
+    drawEdges();
   });
 }
 
-function syncTreeFromMind(): void {
-  if (!board || !mind) return;
-  const existing = flattenBoard(board.root);
-  const data = mind.getData().nodeData;
-
-  const rebuild = (
-    nodeData: MindNodeObj,
-    parent: BoardNode | null,
-  ): BoardNode => {
-    const previous = existing.get(nodeData.id)?.node;
-    const next: BoardNode = previous
-      ? { ...structuredClone(previous), children: [] }
-      : {
-          id: nodeData.id,
-          title: nodeData.topic || "新图卡",
-          status: "draft",
-          expanded: true,
-          children: [],
-        };
-    next.expanded = nodeData.expanded ?? true;
-    if (!previous && parent?.asset) {
-      next.refs = [{ order: 1, source: "parent", usage: "" }];
+function drawEdges(): void {
+  if (!board) return;
+  const lineage = lineageFocusId ? lineageOf(board, lineageFocusId) : null;
+  const paths: string[] = [];
+  for (const card of board.nodes) {
+    const targetShell = cardShell(card.id);
+    if (!targetShell) continue;
+    for (const reference of card.refs ?? []) {
+      const source = findCard(board, reference.source);
+      const sourceShell = source ? cardShell(source.id) : null;
+      if (!source || !sourceShell) continue;
+      const anchors = cardLinkAnchors(
+        {
+          x: source.x,
+          y: source.y,
+          width: sourceShell.offsetWidth,
+          height: sourceShell.offsetHeight,
+        },
+        {
+          x: card.x,
+          y: card.y,
+          width: targetShell.offsetWidth,
+          height: targetShell.offsetHeight,
+        },
+      );
+      const kind = isReadyCard(card) ? "edge-lineage" : "edge-working";
+      const dimmed =
+        lineage !== null &&
+        !(lineage.has(card.id) && lineage.has(source.id));
+      const label = reference.usage.trim();
+      paths.push(
+        `<path class="${kind}${dimmed ? " is-dimmed" : ""}" d="${cardLinkPath(anchors.startX, anchors.startY, anchors.endX, anchors.endY)}"><title>图${reference.order}${label ? `：${escapeHtml(label)}` : ""}</title></path>`,
+      );
+      if (label) {
+        const shortLabel =
+          label.length > 14 ? `${label.slice(0, 14)}…` : label;
+        paths.push(
+          `<text class="edge-label${dimmed ? " is-dimmed" : ""}" x="${anchors.midX}" y="${anchors.midY}" text-anchor="middle" dominant-baseline="middle">${escapeHtml(shortLabel)}</text>`,
+        );
+      }
     }
-    next.children = (nodeData.children ?? []).map((child: MindNodeObj) =>
-      rebuild(child, next),
-    );
-    return next;
-  };
+  }
+  edgeLayer.innerHTML = paths.join("");
+}
 
-  board.root = rebuild(data, null);
-  normalizeClientBoard(board);
+function fitToBoard(): void {
+  if (!board || !board.nodes.length) {
+    canvas.setViewport({ x: 0, y: 0, scale: 1 });
+    return;
+  }
+  const boxes = board.nodes.map((card) => {
+    const shell = cardShell(card.id);
+    return {
+      minX: card.x,
+      minY: card.y,
+      maxX: card.x + (shell?.offsetWidth ?? GENERATION_CARD_WIDTH),
+      maxY: card.y + (shell?.offsetHeight ?? CARD_SLOT_HEIGHT - 60),
+    };
+  });
+  canvas.fitTo({
+    minX: Math.min(...boxes.map((box) => box.minX)),
+    minY: Math.min(...boxes.map((box) => box.minY)),
+    maxX: Math.max(...boxes.map((box) => box.maxX)),
+    maxY: Math.max(...boxes.map((box) => box.maxY)),
+  });
+}
+
+/** Mirror of the server's placement: below the source, sliding right. */
+function placeNearSource(source: BoardCard | undefined): { x: number; y: number } {
+  if (!board) return { x: 0, y: 0 };
+  const start = source
+    ? { x: source.x, y: source.y + CARD_SLOT_HEIGHT }
+    : centerWorldPosition();
+  const occupied = (x: number, y: number): boolean =>
+    board!.nodes.some(
+      (card) =>
+        Math.abs(card.x - x) < CARD_SLOT_WIDTH - 20 &&
+        Math.abs(card.y - y) < CARD_SLOT_HEIGHT - 20,
+    );
+  let { x } = start;
+  while (occupied(x, start.y)) x += CARD_SLOT_WIDTH;
+  return { x, y: start.y };
+}
+
+function centerWorldPosition(): { x: number; y: number } {
+  const rect = canvasRegion.getBoundingClientRect();
+  const center = canvas.toWorld(
+    rect.left + rect.width / 2,
+    rect.top + rect.height / 2,
+  );
+  return {
+    x: center.x - GENERATION_CARD_WIDTH / 2,
+    y: center.y - 120,
+  };
+}
+
+function createDraftCard(options: {
+  x: number;
+  y: number;
+  sourceId?: string;
+  prompt?: string;
+  title?: string;
+}): void {
+  if (!board) return;
+  const source = options.sourceId
+    ? findCard(board, options.sourceId)
+    : undefined;
+  const card: BoardCard = {
+    id: newNodeId(),
+    title: options.title ?? "新图卡",
+    status: "draft",
+    ...(options.prompt ? { prompt: options.prompt } : {}),
+    ...(source?.asset
+      ? { refs: [{ order: 1, source: source.id, usage: "" }] }
+      : {}),
+    x: options.x,
+    y: options.y,
+  };
+  board.nodes.push(card);
+  selectedNodeId = card.id;
   renderBoard(board);
+  queueSave();
+  window.setTimeout(() => {
+    cardShell(card.id)
+      ?.querySelector<HTMLTextAreaElement>(".card-prompt")
+      ?.focus();
+  }, 0);
+}
+
+/**
+ * Every edit makes a new image: deriving from a card wires the source in as
+ * reference 1 and leaves the source untouched. `copyPrompt` seeds the new
+ * card with the source's prompt — the "edit this image" entry point.
+ */
+function deriveCard(sourceId: string, copyPrompt: boolean): void {
+  if (!board) return;
+  const source = findCard(board, sourceId);
+  if (!source) return;
+  const position = placeNearSource(source);
+  createDraftCard({
+    ...position,
+    sourceId,
+    ...(copyPrompt && source.prompt ? { prompt: source.prompt } : {}),
+    title: copyPrompt ? `${source.title || "图"} · 修改` : "新图卡",
+  });
+}
+
+function deleteCard(nodeId: string): void {
+  if (!board) return;
+  board.nodes = board.nodes.filter((card) => card.id !== nodeId);
+  if (selectedNodeId === nodeId) selectedNodeId = null;
+  if (lineageFocusId === nodeId) lineageFocusId = null;
+  renderBoard(board);
+  queueSave();
 }
 
 function handleNodeSelection(nodeId: string): void {
   if (!board) return;
   if (referenceTargetId && referenceTargetId !== nodeId) {
-    const source = findNode(board, nodeId)?.node;
+    const source = findCard(board, nodeId);
     if (!source?.asset) {
       showToast("只能引用已就绪的图片卡", true);
       return;
     }
     addReference(referenceTargetId, nodeId, "");
     referenceTargetId = null;
-    mapElement.classList.remove("reference-mode");
+    canvasRegion.classList.remove("reference-mode");
     setSaveState("已添加参考", "link");
     return;
   }
 
   selectedNodeId = nodeId;
+  applyCanvasState();
   renderInspector();
 }
 
 function addReference(targetId: string, sourceId: string, usage: string): void {
   if (!board) return;
-  const target = findNode(board, targetId);
-  const source = findNode(board, sourceId)?.node;
+  const target = findCard(board, targetId);
+  const source = findCard(board, sourceId);
   if (!target || !source?.asset || targetId === sourceId) {
     showToast("无法添加这条参考关系", true);
     renderBoard(board);
     return;
   }
-  const refs = target.node.refs ?? [];
-  const parentId = target.parent?.id;
-  if (
-    refs.some(
-      (reference) =>
-        reference.source === sourceId ||
-        (reference.source === "parent" && parentId === sourceId),
-    )
-  ) {
+  if (isReadyCard(target)) {
+    showToast("已生成的图卡血缘已固定，请派生新图卡", true);
+    renderBoard(board);
+    return;
+  }
+  const refs = target.refs ?? [];
+  if (refs.some((reference) => reference.source === sourceId)) {
     showToast("这张图已经在参考列表中");
     renderBoard(board);
     return;
@@ -637,9 +651,8 @@ function addReference(targetId: string, sourceId: string, usage: string): void {
     order: refs.length + 1,
     source: sourceId,
     usage,
-    refLineId: `ref-${sourceId}-${targetId}`,
   });
-  target.node.refs = refs;
+  target.refs = refs;
   normalizeClientBoard(board);
   selectedNodeId = targetId;
   renderBoard(board);
@@ -648,7 +661,7 @@ function addReference(targetId: string, sourceId: string, usage: string): void {
 
 function removeReference(targetId: string, sourceId: string): void {
   if (!board) return;
-  const target = findNode(board, targetId)?.node;
+  const target = findCard(board, targetId);
   if (!target) return;
   target.refs = (target.refs ?? []).filter(
     (reference) => reference.source !== sourceId,
@@ -665,11 +678,8 @@ function updateReferenceUsage(
   refresh = true,
 ): void {
   if (!board) return;
-  const target = findNode(board, targetId);
-  const reference = target?.node.refs?.find(
-    (item) =>
-      item.source === sourceId ||
-      (item.source === "parent" && target.parent?.id === sourceId),
+  const reference = findCard(board, targetId)?.refs?.find(
+    (item) => item.source === sourceId,
   );
   if (!reference) return;
   reference.usage = usage;
@@ -707,10 +717,8 @@ function renderInspector(historyOpen = false, preserveFocus = false): void {
     inspectorContent.innerHTML = `<div class="loading-panel">${icon("loading", "spin")}<span>正在加载</span></div>`;
     return;
   }
-  const location = selectedNodeId
-    ? findNode(board, selectedNodeId)
-    : undefined;
-  if (!location || !location.parent) {
+  const card = selectedNodeId ? findCard(board, selectedNodeId) : undefined;
+  if (!card) {
     inspectorTitle.textContent = "画板设置";
     inspectorContent.innerHTML = `
       <div class="field-group">
@@ -719,7 +727,7 @@ function renderInspector(historyOpen = false, preserveFocus = false): void {
       </div>
       <div class="board-meta">
         <span>${board.id}</span>
-        <span>${flattenBoard(board.root).size - 1} 张图卡</span>
+        <span>${board.nodes.length} 张图卡</span>
       </div>
     `;
     const styleNote =
@@ -732,29 +740,29 @@ function renderInspector(historyOpen = false, preserveFocus = false): void {
     return;
   }
 
-  const node = location.node;
-  const refs = referencesForNode(board, node);
+  const ready = isReadyCard(card);
+  const refs = referencesForCard(board, card);
   const history = Object.entries(board.requests)
-    .filter(([, request]) => request.nodeId === node.id)
+    .filter(([, request]) => request.nodeId === card.id)
     .sort((a, b) => b[1].createdAt.localeCompare(a[1].createdAt));
 
-  inspectorTitle.textContent = node.title || "未命名图卡";
+  inspectorTitle.textContent = card.title || "未命名图卡";
   inspectorContent.innerHTML = `
     <div class="field-group">
       <label for="node-title">标题</label>
-      <input id="node-title" value="${escapeHtml(node.title)}" maxlength="200" />
+      <input id="node-title" value="${escapeHtml(card.title)}" maxlength="200" />
     </div>
     <div class="field-group">
-      <label for="node-prompt">生成提示词</label>
-      <textarea id="node-prompt" rows="5">${escapeHtml(node.prompt ?? "")}</textarea>
+      <label for="node-prompt">生成提示词${ready ? "（已固定）" : ""}</label>
+      <textarea id="node-prompt" rows="5" ${ready ? "readonly" : ""}>${escapeHtml(card.prompt ?? "")}</textarea>
     </div>
     <div class="field-group">
       <label for="node-note">本卡备注</label>
-      <textarea id="node-note" rows="3">${escapeHtml(node.note ?? "")}</textarea>
+      <textarea id="node-note" rows="3" ${ready ? "readonly" : ""}>${escapeHtml(card.note ?? "")}</textarea>
     </div>
     <section class="reference-section" aria-labelledby="reference-title">
       <div class="section-heading">
-        <h3 id="reference-title">参考图</h3>
+        <h3 id="reference-title">${ready ? "血缘来源" : "参考图"}</h3>
         <span>${refs.length}/5</span>
       </div>
       <div class="reference-list">
@@ -762,30 +770,30 @@ function renderInspector(historyOpen = false, preserveFocus = false): void {
           refs.length
             ? refs
                 .map(
-                  ({ sourceNode, reference }) => `
+                  ({ sourceCard, reference }) => `
                     <div class="reference-item">
                       <div class="reference-preview">
-                        ${sourceNode.asset ? `<img data-asset="${escapeHtml(sourceNode.asset)}" alt="" loading="lazy" />` : icon("imagePlus")}
+                        ${sourceCard.asset ? `<img data-asset="${escapeHtml(sourceCard.asset)}" alt="" loading="lazy" />` : icon("imagePlus")}
                       </div>
                       <div class="reference-name">
                         <span class="reference-index">图${reference.order}</span>
-                        <strong>${escapeHtml(sourceNode.title)}</strong>
+                        <strong>${escapeHtml(sourceCard.title)}</strong>
                       </div>
-                      <label class="sr-only" for="usage-${escapeHtml(sourceNode.id)}">图${reference.order}取用说明</label>
-                      <input id="usage-${escapeHtml(sourceNode.id)}" data-reference-source="${escapeHtml(sourceNode.id)}" value="${escapeHtml(reference.usage)}" placeholder="取用说明" />
                       ${
-                        reference.source === "parent"
-                          ? ""
-                          : `<button type="button" class="icon-button danger-button" data-remove-reference="${escapeHtml(sourceNode.id)}" aria-label="移除图${reference.order}" title="移除参考">${icon("trash")}</button>`
+                        ready
+                          ? `<span class="reference-usage-static">${escapeHtml(reference.usage) || "&nbsp;"}</span>`
+                          : `<label class="sr-only" for="usage-${escapeHtml(sourceCard.id)}">图${reference.order}取用说明</label>
+                             <input id="usage-${escapeHtml(sourceCard.id)}" data-reference-source="${escapeHtml(sourceCard.id)}" value="${escapeHtml(reference.usage)}" placeholder="取用说明" />
+                             <button type="button" class="icon-button danger-button" data-remove-reference="${escapeHtml(sourceCard.id)}" aria-label="移除图${reference.order}" title="移除参考">${icon("trash")}</button>`
                       }
                     </div>
                   `,
                 )
                 .join("")
-            : `<p class="empty-copy">没有参考图</p>`
+            : `<p class="empty-copy">${ready ? "没有记录来源" : "没有参考图"}</p>`
         }
       </div>
-      <button type="button" class="secondary-button full-button" id="pick-reference">${icon("link")}添加参考图</button>
+      ${ready ? "" : `<button type="button" class="secondary-button full-button" id="pick-reference">${icon("link")}添加参考图</button>`}
     </section>
     <section class="history-section" aria-labelledby="history-title">
       <button type="button" class="disclosure-button" id="history-toggle" aria-expanded="${historyOpen}">
@@ -800,11 +808,15 @@ function renderInspector(historyOpen = false, preserveFocus = false): void {
         }
       </div>
     </section>
-    <button type="button" class="primary-button full-button" id="generate-selected">${icon(node.status === "error" ? "refresh" : "sparkles")}${node.status === "error" ? "重试生成" : "生成图片"}</button>
-    ${node.error ? `<p class="inline-error" role="alert">${icon("alert")}${escapeHtml(node.error)}</p>` : ""}
+    ${
+      ready
+        ? `<button type="button" class="primary-button full-button" id="fork-selected">${icon("pencil")}编辑生成新图</button>`
+        : `<button type="button" class="primary-button full-button" id="generate-selected">${icon(card.status === "error" ? "refresh" : "sparkles")}${card.status === "error" ? "重试生成" : "生成图片"}</button>`
+    }
+    ${card.error ? `<p class="inline-error" role="alert">${icon("alert")}${escapeHtml(card.error)}</p>` : ""}
   `;
 
-  bindInspectorFields(node, historyOpen);
+  bindInspectorFields(card, historyOpen, ready);
 }
 
 function renderHistory(id: string, request: GenerationRecord): string {
@@ -822,30 +834,36 @@ function renderHistory(id: string, request: GenerationRecord): string {
   `;
 }
 
-function bindInspectorFields(node: BoardNode, historyOpen: boolean): void {
+function bindInspectorFields(
+  card: BoardCard,
+  historyOpen: boolean,
+  ready: boolean,
+): void {
   const title = inspectorContent.querySelector<HTMLInputElement>("#node-title")!;
-  const prompt =
-    inspectorContent.querySelector<HTMLTextAreaElement>("#node-prompt")!;
-  const note =
-    inspectorContent.querySelector<HTMLTextAreaElement>("#node-note")!;
   bindComposedInput(title, () => {
-    node.title = title.value;
+    card.title = title.value;
     queueSave(true);
   });
-  bindComposedInput(prompt, () => {
-    node.prompt = prompt.value;
-    queueSave(true);
-  });
-  bindComposedInput(note, () => {
-    node.note = note.value;
-    queueSave();
-  });
+  if (!ready) {
+    const prompt =
+      inspectorContent.querySelector<HTMLTextAreaElement>("#node-prompt")!;
+    const note =
+      inspectorContent.querySelector<HTMLTextAreaElement>("#node-note")!;
+    bindComposedInput(prompt, () => {
+      card.prompt = prompt.value;
+      queueSave(true);
+    });
+    bindComposedInput(note, () => {
+      card.note = note.value;
+      queueSave();
+    });
+  }
   inspectorContent
     .querySelectorAll<HTMLInputElement>("[data-reference-source]")
     .forEach((input) => {
       bindComposedInput(input, () => {
         updateReferenceUsage(
-          node.id,
+          card.id,
           input.dataset.referenceSource!,
           input.value,
           false,
@@ -856,29 +874,34 @@ function bindInspectorFields(node: BoardNode, historyOpen: boolean): void {
     .querySelectorAll<HTMLButtonElement>("[data-remove-reference]")
     .forEach((button) => {
       button.addEventListener("click", () => {
-        removeReference(node.id, button.dataset.removeReference!);
+        removeReference(card.id, button.dataset.removeReference!);
       });
     });
   inspectorContent
     .querySelector<HTMLButtonElement>("#pick-reference")
-    ?.addEventListener("click", () => beginReferencePick(node.id));
+    ?.addEventListener("click", () => beginReferencePick(card.id));
   inspectorContent
     .querySelector<HTMLButtonElement>("#history-toggle")
     ?.addEventListener("click", () => renderInspector(!historyOpen));
   inspectorContent
     .querySelector<HTMLButtonElement>("#generate-selected")
-    ?.addEventListener("click", () => void generateNode(node.id));
+    ?.addEventListener("click", () => void generateNode(card.id));
+  inspectorContent
+    .querySelector<HTMLButtonElement>("#fork-selected")
+    ?.addEventListener("click", () => {
+      setPanelOpen(false);
+      deriveCard(card.id, true);
+    });
 }
 
 function beginReferencePick(targetId: string): void {
   referenceTargetId = targetId;
-  mapElement.classList.add("reference-mode");
+  canvasRegion.classList.add("reference-mode");
   setSaveState("选择参考来源", "link");
   setPanelOpen(false);
-  const target = mapElement.querySelector<HTMLElement>(
-    `[data-node-id="${CSS.escape(targetId)}"]`,
-  );
-  target?.focus();
+  cardShell(targetId)
+    ?.querySelector<HTMLElement>("[data-node-id]")
+    ?.focus();
 }
 
 function queueSave(refreshCards = false, immediate = false): void {
@@ -915,7 +938,7 @@ async function flushSave(): Promise<void> {
   const patch = structuredClone({
     title: board.title,
     styleNote: board.styleNote,
-    root: board.root,
+    nodes: board.nodes,
   });
   refreshAfterSave = false;
 
@@ -987,17 +1010,6 @@ async function generateNode(nodeId: string): Promise<void> {
     setSaveState("提交失败", "alert");
     showToast(errorMessage(error), true);
   }
-}
-
-/**
- * mind-elixir rebuilds the map DOM outside renderBoard too: focusNode,
- * cancelFocus, and the collapse/expand toggle all recreate card elements.
- * A recreated <img data-asset> has no src until it is hydrated again, so
- * every such rebuild must be followed by this.
- */
-function rehydrateMapView(): void {
-  hydrateAssets();
-  bindCardControlKeys();
 }
 
 function hydrateAssets(): void {
@@ -1198,7 +1210,10 @@ function setImportBusy(busy: boolean): void {
   if (menuItem) menuItem.disabled = busy;
 }
 
-async function importImageFiles(fileList: FileList | File[]): Promise<void> {
+async function importImageFiles(
+  fileList: FileList | File[],
+  dropPosition?: { x: number; y: number },
+): Promise<void> {
   if (importInFlight) {
     showToast("图片正在导入");
     return;
@@ -1225,9 +1240,10 @@ async function importImageFiles(fileList: FileList | File[]): Promise<void> {
     return;
   }
 
-  const parentNodeId =
-    pendingImportParentNodeId ?? selectedNodeId ?? board.root.id;
+  const parentNodeId = pendingImportParentNodeId;
   pendingImportParentNodeId = null;
+  const basePosition =
+    dropPosition ?? (parentNodeId ? undefined : centerWorldPosition());
   const failures: string[] = [];
   let imported = 0;
   let latestBoard = board;
@@ -1242,7 +1258,7 @@ async function importImageFiles(fileList: FileList | File[]): Promise<void> {
 
   try {
     await flushSave();
-    for (const file of importable) {
+    for (const [index, file] of importable.entries()) {
       try {
         const result = await bridge.callTool<{ board: Board; nodeId: string }>(
           "mindart_import_image",
@@ -1252,6 +1268,12 @@ async function importImageFiles(fileList: FileList | File[]): Promise<void> {
             file_name: file.name,
             ...(file.type ? { mime_type: file.type } : {}),
             ...(parentNodeId ? { parent_node_id: parentNodeId } : {}),
+            ...(basePosition
+              ? {
+                  x: basePosition.x + index * CARD_SLOT_WIDTH,
+                  y: basePosition.y,
+                }
+              : {}),
             title: titleFromFileName(file.name) || "素材图",
           },
         );
@@ -1293,53 +1315,40 @@ function dragContainsFiles(event: DragEvent): boolean {
 
 function demoBoard(): Board {
   return {
-    version: 1,
+    version: 2,
     id: "board-demo",
     title: "夜行角色概念",
     styleNote: "东方志怪角色，电影级柔光，克制配色，材质细节清晰",
-    root: {
-      id: "root",
-      title: "夜行角色概念",
-      expanded: true,
-      children: [
-        {
-          id: "body",
-          title: "引魂灯完稿",
-          status: "ready",
-          asset: "assets/demo-body.png",
-          expanded: true,
-          children: [
-            {
-              id: "result",
-              title: "图片生成",
-              status: "draft",
-              prompt: "设计一个新的夜行角色，参考图1的体型，图2的青绿色配色",
-              note: "斗篷边缘保留磨损，背景保持干净",
-              refs: [
-                { order: 1, source: "parent", usage: "体型与轮廓" },
-                {
-                  order: 2,
-                  source: "palette",
-                  usage: "青绿色配色",
-                  refLineId: "ref-palette-result",
-                },
-              ],
-              children: [],
-            },
-          ],
-        },
-        {
-          id: "palette",
-          title: "赌翁完稿",
-          status: "ready",
-          asset: "assets/demo-palette.png",
-          expanded: true,
-          children: [],
-        },
-      ],
-    },
-    refLines: [
-      { id: "ref-palette-result", from: "palette", to: "result" },
+    nodes: [
+      {
+        id: "body",
+        title: "引魂灯完稿",
+        status: "ready",
+        asset: "assets/demo-body.png",
+        x: 0,
+        y: 0,
+      },
+      {
+        id: "palette",
+        title: "赌翁完稿",
+        status: "ready",
+        asset: "assets/demo-palette.png",
+        x: CARD_SLOT_WIDTH,
+        y: 0,
+      },
+      {
+        id: "result",
+        title: "图片生成",
+        status: "draft",
+        prompt: "设计一个新的夜行角色，参考图1的体型，图2的青绿色配色",
+        note: "斗篷边缘保留磨损，背景保持干净",
+        refs: [
+          { order: 1, source: "body", usage: "体型与轮廓" },
+          { order: 2, source: "palette", usage: "青绿色配色" },
+        ],
+        x: 26,
+        y: CARD_SLOT_HEIGHT * 0.82,
+      },
     ],
     requests: {},
     createdAt: "2026-08-01T08:00:00.000Z",
@@ -1354,42 +1363,6 @@ function setContextMenuItemVisible(action: string, visible: boolean): void {
   if (item) item.hidden = !visible;
 }
 
-function stopMindShortcutPropagation(event: KeyboardEvent): void {
-  event.stopPropagation();
-}
-
-function bindCardControlKeys(): void {
-  mapElement
-    .querySelectorAll<HTMLElement>("input, textarea, button, select")
-    .forEach((control) => {
-      control.addEventListener("keydown", stopMindShortcutPropagation);
-    });
-}
-
-function createNamedMindNode(title: string): MindNodeObj | undefined {
-  if (!mind) return undefined;
-  return {
-    ...mind.generateNewObj(),
-    topic: title,
-  } as MindNodeObj;
-}
-
-async function addNamedChild(
-  topic = mind?.currentNode ?? undefined,
-): Promise<void> {
-  if (!mind || !topic) return;
-  const node = createNamedMindNode("新子级图卡");
-  if (node) await mind.addChild(topic, node);
-}
-
-async function insertNamedParent(
-  topic = mind?.currentNode ?? undefined,
-): Promise<void> {
-  if (!mind || !topic || topic.nodeObj.id === board?.root.id) return;
-  const node = createNamedMindNode("新父级图卡");
-  if (node) await mind.insertParent(topic, node);
-}
-
 function closeNodeContextMenu(restoreFocus = false): void {
   if (nodeContextMenu.hidden) return;
   nodeContextMenu.hidden = true;
@@ -1399,8 +1372,8 @@ function closeNodeContextMenu(restoreFocus = false): void {
 }
 
 function openNodeContextMenu(event: MouseEvent, nodeId: string): void {
-  if (!board || !mind) return;
-  const card = mapElement.querySelector<HTMLElement>(
+  if (!board) return;
+  const card = cardLayer.querySelector<HTMLElement>(
     `[data-node-id="${CSS.escape(nodeId)}"]`,
   );
   if (!card) return;
@@ -1409,21 +1382,20 @@ function openNodeContextMenu(event: MouseEvent, nodeId: string): void {
   event.stopPropagation();
   closeNodeContextMenu();
 
-  const topic = mind.findEle(nodeId);
-  mind.selectNode(topic);
   handleNodeSelection(nodeId);
   contextMenuNodeId = nodeId;
   contextMenuReturnFocus = card;
 
-  const isRoot = nodeId === board.root.id;
-  const hasAsset = Boolean(findNode(board, nodeId)?.node.asset);
-  setContextMenuItemVisible("add-parent", !isRoot);
+  const target = findCard(board, nodeId);
+  const hasAsset = Boolean(target?.asset);
+  const ready = target ? isReadyCard(target) : false;
+  setContextMenuItemVisible("edit-fork", ready);
+  setContextMenuItemVisible("add-image-child", hasAsset);
   setContextMenuItemVisible("reveal-finder", hasAsset);
   setContextMenuItemVisible("reveal-browser", hasAsset);
-  setContextMenuItemVisible("add-reference", !isRoot);
-  setContextMenuItemVisible("focus", !isRoot && !mind.isFocusMode);
-  setContextMenuItemVisible("cancel-focus", mind.isFocusMode);
-  setContextMenuItemVisible("delete", !isRoot);
+  setContextMenuItemVisible("add-reference", !ready);
+  setContextMenuItemVisible("focus", lineageFocusId !== nodeId);
+  setContextMenuItemVisible("cancel-focus", lineageFocusId !== null);
 
   nodeContextMenu.hidden = false;
   const menuRect = nodeContextMenu.getBoundingClientRect();
@@ -1454,7 +1426,7 @@ async function revealNodeAsset(
   mode: "finder" | "browser",
 ): Promise<void> {
   if (!board) return;
-  const asset = findNode(board, nodeId)?.node.asset;
+  const asset = findCard(board, nodeId)?.asset;
   if (!asset) {
     showToast("这张图卡还没有图片");
     return;
@@ -1468,17 +1440,16 @@ async function revealNodeAsset(
 }
 
 async function runContextMenuAction(action: string): Promise<void> {
-  if (!mind || !contextMenuNodeId) return;
+  if (!contextMenuNodeId) return;
   const nodeId = contextMenuNodeId;
-  const topic = mind.findEle(nodeId);
   closeNodeContextMenu();
 
-  if (action === "add-child") {
-    await addNamedChild(topic);
+  if (action === "derive") {
+    deriveCard(nodeId, false);
     return;
   }
-  if (action === "add-parent") {
-    await insertNamedParent(topic);
+  if (action === "edit-fork") {
+    deriveCard(nodeId, true);
     return;
   }
   if (action === "add-image-child") {
@@ -1497,21 +1468,129 @@ async function runContextMenuAction(action: string): Promise<void> {
     return;
   }
   if (action === "focus") {
-    mind.focusNode(topic);
-    rehydrateMapView();
+    lineageFocusId = nodeId;
+    applyCanvasState();
+    scheduleEdgeDraw();
     return;
   }
   if (action === "cancel-focus") {
-    mind.cancelFocus();
-    rehydrateMapView();
+    lineageFocusId = null;
+    applyCanvasState();
+    scheduleEdgeDraw();
     return;
   }
   if (action === "delete") {
-    await mind.removeNodes([topic]);
+    deleteCard(nodeId);
   }
 }
 
-mapElement.addEventListener("contextmenu", (event) => {
+// ---------------------------------------------------------------------------
+// Canvas interactions: select, drag, create.
+
+// A card grows when its image arrives, which moves every edge anchored to it.
+// The initial fit also ran against pre-image sizes, so re-frame briefly after
+// a board is first framed. "load" does not bubble; capture catches it.
+cardLayer.addEventListener(
+  "load",
+  () => {
+    scheduleEdgeDraw();
+    if (performance.now() - framedAt < 2_000) fitToBoard();
+  },
+  true,
+);
+
+interface CardDrag {
+  pointerId: number;
+  nodeId: string;
+  startClientX: number;
+  startClientY: number;
+  originX: number;
+  originY: number;
+  moved: boolean;
+}
+
+let cardDrag: CardDrag | null = null;
+
+cardLayer.addEventListener("pointerdown", (event) => {
+  if (!board || event.button !== 0) return;
+  const target = event.target as HTMLElement;
+  if (target.closest("input, textarea, button, select")) return;
+  const shell = target.closest<HTMLElement>("[data-canvas-node]");
+  if (!shell) return;
+  const nodeId = shell.dataset.canvasNode!;
+  const card = findCard(board, nodeId);
+  if (!card) return;
+  cardDrag = {
+    pointerId: event.pointerId,
+    nodeId,
+    startClientX: event.clientX,
+    startClientY: event.clientY,
+    originX: card.x,
+    originY: card.y,
+    moved: false,
+  };
+  shell.setPointerCapture(event.pointerId);
+  event.stopPropagation();
+});
+
+cardLayer.addEventListener("pointermove", (event) => {
+  if (!board || cardDrag?.pointerId !== event.pointerId) return;
+  const deltaX = (event.clientX - cardDrag.startClientX) / canvas.viewport.scale;
+  const deltaY = (event.clientY - cardDrag.startClientY) / canvas.viewport.scale;
+  if (!cardDrag.moved && Math.hypot(deltaX, deltaY) < 4) return;
+  cardDrag.moved = true;
+  const card = findCard(board, cardDrag.nodeId);
+  const shell = cardShell(cardDrag.nodeId);
+  if (!card || !shell) return;
+  card.x = cardDrag.originX + deltaX;
+  card.y = cardDrag.originY + deltaY;
+  shell.style.left = `${card.x}px`;
+  shell.style.top = `${card.y}px`;
+  scheduleEdgeDraw();
+});
+
+cardLayer.addEventListener("pointerup", (event) => {
+  if (cardDrag?.pointerId !== event.pointerId) return;
+  const { nodeId, moved } = cardDrag;
+  cardDrag = null;
+  if (moved) {
+    queueSave();
+  } else {
+    handleNodeSelection(nodeId);
+  }
+});
+
+cardLayer.addEventListener("pointercancel", (event) => {
+  if (cardDrag?.pointerId !== event.pointerId) return;
+  const { nodeId, moved } = cardDrag;
+  cardDrag = null;
+  if (moved && board) {
+    // The gesture died mid-drag; keep whatever position it reached.
+    queueSave();
+  }
+  void nodeId;
+});
+
+canvasRegion.addEventListener("dblclick", (event) => {
+  if (!board) return;
+  if ((event.target as HTMLElement).closest("[data-node-id]")) return;
+  const world = canvas.toWorld(event.clientX, event.clientY);
+  createDraftCard({
+    x: world.x - GENERATION_CARD_WIDTH / 2,
+    y: world.y - 40,
+  });
+});
+
+canvas.onbackgrounddown = () => {
+  closeNodeContextMenu();
+  if (selectedNodeId !== null) {
+    selectedNodeId = null;
+    applyCanvasState();
+    renderInspector();
+  }
+};
+
+canvasRegion.addEventListener("contextmenu", (event) => {
   const target = event.target as HTMLElement;
   const card = target.closest<HTMLElement>("[data-node-id]");
   if (!card) return;
@@ -1569,55 +1648,70 @@ document.addEventListener("pointerdown", (event) => {
   }
 });
 
-mapElement.addEventListener("click", (event) => {
+cardLayer.addEventListener("click", (event) => {
   const target = event.target as HTMLElement;
   const card = target.closest<HTMLElement>("[data-node-id]");
   if (!card) return;
   const nodeId = card.dataset.nodeId!;
   const action = target.closest<HTMLElement>("[data-action]")?.dataset.action;
-  if (!action) {
-    handleNodeSelection(nodeId);
-    return;
-  }
+  if (!action) return;
   if (action === "add-reference") beginReferencePick(nodeId);
   if (action === "generate") void generateNode(nodeId);
+  if (action === "edit-fork") deriveCard(nodeId, true);
   if (action === "reference-detail") {
     selectedNodeId = nodeId;
+    applyCanvasState();
     renderInspector();
     setPanelOpen(true);
   }
   if (action === "history") {
     selectedNodeId = nodeId;
+    applyCanvasState();
     renderInspector(true);
     setPanelOpen(true);
   }
 });
 
-mapElement.addEventListener("input", (event) => {
+cardLayer.addEventListener("input", (event) => {
   if (!board) return;
   const target = event.target as HTMLInputElement | HTMLTextAreaElement;
-  const card = target.closest<HTMLElement>("[data-node-id]");
-  const node = card ? findNode(board, card.dataset.nodeId!)?.node : undefined;
-  if (!node) return;
-  if (target.dataset.action === "title") node.title = target.value;
-  if (target.dataset.action === "prompt") node.prompt = target.value;
-  selectedNodeId = node.id;
+  const shell = target.closest<HTMLElement>("[data-node-id]");
+  const card = shell ? findCard(board, shell.dataset.nodeId!) : undefined;
+  if (!card) return;
+  if (target.dataset.action === "title") card.title = target.value;
+  if (target.dataset.action === "prompt") card.prompt = target.value;
+  selectedNodeId = card.id;
   queueSave();
 });
 
-mapElement.addEventListener("keydown", (event) => {
+window.addEventListener("keydown", (event) => {
   const target = event.target as HTMLElement;
-  if (target.matches("input, textarea, button, select")) {
-    event.stopPropagation();
+  if (target.matches("input, textarea, select")) return;
+  if (event.key === "Escape") {
+    if (referenceTargetId) {
+      referenceTargetId = null;
+      canvasRegion.classList.remove("reference-mode");
+      setSaveState("");
+      return;
+    }
+    if (lineageFocusId) {
+      lineageFocusId = null;
+      applyCanvasState();
+      scheduleEdgeDraw();
+      return;
+    }
   }
-  if (event.key === "Escape" && referenceTargetId) {
-    referenceTargetId = null;
-    mapElement.classList.remove("reference-mode");
-    setSaveState("");
+  if (!board || !selectedNodeId) return;
+  if (event.key === "Tab") {
+    event.preventDefault();
+    deriveCard(selectedNodeId, false);
+  } else if (event.key === "Delete" || event.key === "Backspace") {
+    event.preventDefault();
+    deleteCard(selectedNodeId);
   }
 });
 
-mapElement.addEventListener("focusout", (event) => {
+cardLayer.addEventListener("focusout", (event) => {
   if ((event.target as HTMLElement).matches("input, textarea")) {
     void flushSave().catch(() => undefined);
   }
@@ -1626,8 +1720,7 @@ mapElement.addEventListener("focusout", (event) => {
 boardTitleInput.addEventListener("input", () => {
   if (!board) return;
   board.title = boardTitleInput.value || "未命名画板";
-  board.root.title = board.title;
-  queueSave(true);
+  queueSave();
 });
 boardTitleInput.addEventListener("blur", () => {
   void flushSave().catch(() => undefined);
@@ -1641,8 +1734,12 @@ inspectorContent.addEventListener("focusout", (event) => {
   window.setTimeout(flushPendingInspectorRender, 0);
 });
 
-document.querySelector("#fit-button")?.addEventListener("click", () => {
-  mind?.scaleFit();
+document.querySelector("#fit-button")?.addEventListener("click", fitToBoard);
+document.querySelector("#zoom-in-button")?.addEventListener("click", () => {
+  canvas.zoomBy(1.2);
+});
+document.querySelector("#zoom-out-button")?.addEventListener("click", () => {
+  canvas.zoomBy(1 / 1.2);
 });
 document.querySelector("#fullscreen-button")?.addEventListener("click", () => {
   void bridge.toggleFullscreen().catch((error) => showToast(errorMessage(error), true));
@@ -1678,7 +1775,11 @@ window.addEventListener("drop", (event) => {
   fileDragDepth = 0;
   imageDropOverlay.hidden = true;
   pendingImportParentNodeId = null;
-  void importImageFiles(files);
+  const world = canvas.toWorld(event.clientX, event.clientY);
+  void importImageFiles(files, {
+    x: world.x - GENERATION_CARD_WIDTH / 2,
+    y: world.y - 40,
+  });
 });
 window.addEventListener("paste", (event) => {
   const files = Array.from(event.clipboardData?.files ?? []).filter(
@@ -1727,8 +1828,8 @@ bridge.onResult = (payload: StructuredResult) => {
       return;
     }
     renderBoard(nextBoard as Board);
-    // A stale snapshot can be a bare root with no images at all, in which case
-    // nothing would lazily trigger the rebinding. Ask for the live board now.
+    // A stale snapshot can be an empty board with no images at all, in which
+    // case nothing would lazily trigger the rebinding. Ask for the live board.
     void ensureBoardBinding().catch((error) => {
       showToast(errorMessage(error), true);
     });

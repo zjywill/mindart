@@ -44,8 +44,8 @@ const appOnlyMeta = {
 
 /**
  * Every source image a card was made from, in the order it was fed to the
- * generator, each with what was taken from it. The tree parent may appear here
- * by its own node id to give it a usage note; it is always reference 1.
+ * generator, each with what was taken from it. The first source is the
+ * primary one — reference 1.
  */
 const SourceListSchema = z
   .array(
@@ -80,11 +80,7 @@ function describeLineage(refs: ReadonlyArray<{ source: string }>): string {
   if (refs.length === 0) {
     return "No source images recorded. If this image was generated from cards on this board, call mindart_link_sources to record them.";
   }
-  const sources = refs
-    .map((reference) =>
-      reference.source === "parent" ? "its parent card" : reference.source,
-    )
-    .join(", ");
+  const sources = refs.map((reference) => reference.source).join(", ");
   return `Sources: ${sources}.`;
 }
 
@@ -153,7 +149,7 @@ export function registerMindArtTools(
     {
       title: "Get MindArt Board",
       description:
-        "Read a MindArt board, including its image-card tree, references, and generation history.",
+        "Read a MindArt board, including its image cards, their positions and references, and generation history.",
       inputSchema: z.object({
         board_id: BoardIdSchema,
       }),
@@ -210,7 +206,7 @@ export function registerMindArtTools(
     {
       title: "Queue MindArt Generation",
       description:
-        "Queue an image generation request compiled from a target card, its parent image, and up to four cross-branch references. This tool is called only by the MindArt canvas.",
+        "Queue an image generation request compiled from a target card and up to five source reference images. This tool is called only by the MindArt canvas.",
       inputSchema: z.object({
         board_id: BoardIdSchema,
         node_id: z.string().trim().min(1),
@@ -285,7 +281,7 @@ export function registerMindArtTools(
     {
       title: "Update MindArt Board",
       description:
-        "Persist board title, style, tree, references, and history changes made in the MindArt canvas. This tool is called only by the canvas.",
+        "Persist board title, style, card, position, and reference changes made in the MindArt canvas. This tool is called only by the canvas.",
       inputSchema: z.object({
         board_id: BoardIdSchema,
         patch: BoardPatchSchema,
@@ -359,11 +355,11 @@ export function registerMindArtTools(
     {
       title: "Import Image Into MindArt",
       description:
-        "Import an uploaded image or local project image into a MindArt board as a ready image card. Provide image_data with file_name, or provide source_path. " +
-        "A MindArt board is a genealogy of images, not a gallery, and one rule decides where a card belongs: its parent is the image you actually fed to the generator. " +
-        "So for an image you just generated, set parent_node_id to the card whose image you built on and list every card you fed in sources, in generator order, each with what you took from it. " +
-        "An edit of a card hangs off that card; another attempt at a result the user rejected hangs off that result's parent, beside it, because you fed its inputs rather than the result itself; variants from one prompt are siblings sharing a parent. " +
-        "Omit both only for an image with no source on the board, such as a file the user just supplied.",
+        "Import an uploaded image or local project image into a MindArt board as a ready image card on the canvas. Provide image_data with file_name, or provide source_path. " +
+        "A MindArt board is a genealogy of images, not a gallery, and one rule decides how a card connects: its sources are the images you actually fed to the generator. " +
+        "So for an image you just generated, list every card you fed in sources, in generator order, each with what you took from it, and set parent_node_id to the primary one. " +
+        "An edit of a card links back to that card; another attempt at a result the user rejected links to that result's sources, because you fed its inputs rather than the result itself. " +
+        "Omit sources only for an image with no source on the board, such as a file the user just supplied.",
       inputSchema: z.object({
         board_id: BoardIdSchema.optional(),
         source_path: z.string().trim().min(1).optional(),
@@ -381,11 +377,17 @@ export function registerMindArtTools(
           .min(1)
           .optional()
           .describe(
-            "Card this image was primarily derived from. It becomes the new card's parent and its first reference image. Defaults to the board root, which means the image has no source on the board.",
+            "Card this image was primarily derived from. It becomes the new card's first reference image. Omit for an image with no source on the board.",
           ),
         sources: SourceListSchema.optional().describe(
           "Every card whose image fed this one, in generator order. Each becomes a numbered reference and draws a link back to its source card. Include parent_node_id here too, to record what was taken from it.",
         ),
+        x: z
+          .number()
+          .finite()
+          .optional()
+          .describe("Canvas position for the new card. Omit to auto-place it."),
+        y: z.number().finite().optional(),
         prompt: z
           .string()
           .trim()
@@ -405,7 +407,6 @@ export function registerMindArtTools(
             order: z.number(),
             source: z.string(),
             usage: z.string(),
-            refLineId: z.string().optional(),
           }),
         ),
       }),
@@ -421,6 +422,8 @@ export function registerMindArtTools(
       sources,
       prompt,
       title,
+      x,
+      y,
     }) => {
       if (Boolean(source_path) === Boolean(image_data)) {
         throw new Error("Provide either image_data or source_path");
@@ -440,6 +443,8 @@ export function registerMindArtTools(
         ...(sources === undefined ? {} : { sources: toSourceInputs(sources) }),
         ...(prompt === undefined ? {} : { prompt }),
         ...(title === undefined ? {} : { title }),
+        ...(x === undefined ? {} : { x }),
+        ...(y === undefined ? {} : { y }),
       });
       return success(
         `Imported image as node ${result.nodeId}. ${describeLineage(result.refs)}`,
@@ -455,7 +460,7 @@ export function registerMindArtTools(
       title: "Link MindArt Image Sources",
       description:
         "Record which cards an existing card's image came from. " +
-        "In MindArt the branch is the lineage, so parent_node_id moves the card onto the branch of the image it was built on, and sources records every source image with what was taken from each. " +
+        "The first source is the primary one, so parent_node_id moves that card to the front, and sources records every source image with what was taken from each. " +
         "Use this to repair a card that landed on the board without its sources, or when the user says one image was made from another.",
       inputSchema: z.object({
         board_id: BoardIdSchema,
@@ -466,7 +471,7 @@ export function registerMindArtTools(
           .min(1)
           .optional()
           .describe(
-            "Card this image was primarily derived from. Pass the board root id to detach the card from any source. Omit to leave the card where it is.",
+            "Card this image was primarily derived from. It moves to the front of the reference list. Omit to keep the current order.",
           ),
         sources: SourceListSchema.optional().describe(
           "Every card whose image fed this one, in generator order. Replaces the card's existing references; omit to keep them, pass an empty array to clear them.",
@@ -480,7 +485,6 @@ export function registerMindArtTools(
             order: z.number(),
             source: z.string(),
             usage: z.string(),
-            refLineId: z.string().optional(),
           }),
         ),
       }),

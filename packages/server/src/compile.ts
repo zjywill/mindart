@@ -1,29 +1,10 @@
 import path from "node:path";
-import type {
-  Board,
-  BoardNode,
-  GenerationReference,
-  NodeReference,
-} from "./model.js";
-import { flattenBoard } from "./model.js";
+import type { Board, GenerationReference } from "./model.js";
+import { cardsById } from "./model.js";
 
 export interface CompiledGeneration {
   compiledPrompt: string;
   refs: GenerationReference[];
-}
-
-function resolveReferenceNodeId(
-  node: BoardNode,
-  parent: BoardNode | null,
-  reference: NodeReference,
-): string {
-  if (reference.source === "parent") {
-    if (!parent) {
-      throw new Error(`Node ${node.id} has a parent reference without a parent`);
-    }
-    return parent.id;
-  }
-  return reference.source;
 }
 
 export function compileGenerationRequest(
@@ -32,32 +13,27 @@ export function compileGenerationRequest(
   boardDirectory: string,
   requestId: string,
 ): CompiledGeneration {
-  const nodes = flattenBoard(board.root);
-  const location = nodes.get(nodeId);
-  if (!location) throw new Error(`Node not found: ${nodeId}`);
+  const cards = cardsById(board);
+  const card = cards.get(nodeId);
+  if (!card) throw new Error(`Node not found: ${nodeId}`);
 
-  const prompt = location.node.prompt?.trim();
+  const prompt = card.prompt?.trim();
   if (!prompt) throw new Error("Generation prompt is required");
 
-  const nodeRefs = location.node.refs ?? [];
+  const nodeRefs = card.refs ?? [];
   if (nodeRefs.length > 5) {
     throw new Error("A generation can use at most 5 reference images");
   }
 
   const refs = nodeRefs.map((reference) => {
-    const sourceNodeId = resolveReferenceNodeId(
-      location.node,
-      location.parent,
-      reference,
-    );
-    const sourceNode = nodes.get(sourceNodeId)?.node;
-    if (!sourceNode?.asset) {
-      throw new Error(`Reference ${sourceNodeId} has no image asset`);
+    const sourceCard = cards.get(reference.source);
+    if (!sourceCard?.asset) {
+      throw new Error(`Reference ${reference.source} has no image asset`);
     }
     return {
-      node: sourceNodeId,
+      node: sourceCard.id,
       usage: reference.usage,
-      asset: sourceNode.asset,
+      asset: sourceCard.asset,
     };
   });
 
@@ -76,8 +52,8 @@ export function compileGenerationRequest(
   if (board.styleNote.trim()) {
     lines.push(`风格设定（画板级）：${board.styleNote.trim()}`);
   }
-  if (location.node.note?.trim()) {
-    lines.push(`本卡备注：${location.node.note.trim()}`);
+  if (card.note?.trim()) {
+    lines.push(`本卡备注：${card.note.trim()}`);
   }
 
   if (refs.length > 0) {

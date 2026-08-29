@@ -1,109 +1,71 @@
-export interface BranchPathParams {
-  pT: number;
-  pL: number;
-  pW: number;
-  pH: number;
-  cT: number;
-  cL: number;
-  cW: number;
-  cH: number;
-  direction: string;
-}
-
-export interface ArrowHandle {
-  x: number;
-  y: number;
-}
-
-export const TREE_NODE_GAP_X = 48;
-
 function coordinate(value: number): string {
   return Number(value.toFixed(2)).toString();
 }
 
-function directCurve(
+/**
+ * A lineage link runs from the bottom edge of a source card to the top edge
+ * of the card derived from it: a vertical S-curve, matching the way
+ * generations grow downward on the canvas.
+ */
+export function cardLinkPath(
   startX: number,
   startY: number,
   endX: number,
   endY: number,
 ): string {
-  const horizontalDistance = Math.abs(endX - startX);
+  const verticalDistance = Math.abs(endY - startY);
   const handleLength = Math.min(
     160,
-    Math.max(40, horizontalDistance * 0.42),
-    horizontalDistance / 2,
+    Math.max(40, verticalDistance * 0.42),
+    Math.max(verticalDistance / 2, 24),
   );
-  const directionSign = endX >= startX ? 1 : -1;
-  const firstControlX = startX + handleLength * directionSign;
-  const secondControlX = endX - handleLength * directionSign;
+  const directionSign = endY >= startY ? 1 : -1;
+  const firstControlY = startY + handleLength * directionSign;
+  const secondControlY = endY - handleLength * directionSign;
 
   return [
     `M ${coordinate(startX)} ${coordinate(startY)}`,
-    `C ${coordinate(firstControlX)} ${coordinate(startY)}`,
-    `${coordinate(secondControlX)} ${coordinate(endY)}`,
+    `C ${coordinate(startX)} ${coordinate(firstControlY)}`,
+    `${coordinate(endX)} ${coordinate(secondControlY)}`,
     `${coordinate(endX)} ${coordinate(endY)}`,
   ].join(" ");
 }
 
-export function directBranchPath({
-  pT,
-  pL,
-  pW,
-  pH,
-  cT,
-  cL,
-  cW,
-  cH,
-  direction,
-}: BranchPathParams): string {
-  const connectsLeftward = direction === "lhs";
-  const startX = connectsLeftward ? pL : pL + pW;
-  const endX = connectsLeftward ? cL + cW : cL;
-
-  return directCurve(
-    startX,
-    pT + pH / 2,
-    endX,
-    cT + cH / 2,
-  );
+export interface LinkAnchors {
+  startX: number;
+  startY: number;
+  endX: number;
+  endY: number;
+  midX: number;
+  midY: number;
 }
 
-export function directSubBranchPath({
-  pT,
-  pL,
-  pW,
-  pH,
-  cT,
-  cL,
-  cW,
-  cH,
-  direction,
-}: BranchPathParams): string {
-  const connectsLeftward = direction === "lhs";
-  const startX = connectsLeftward ? pL : pL + pW;
-  const endX = connectsLeftward
-    ? cL + cW - TREE_NODE_GAP_X
-    : cL + TREE_NODE_GAP_X;
-
-  return directCurve(
-    startX,
-    pT + pH / 2,
-    endX,
-    cT + cH / 2,
-  );
+interface CardBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 }
 
-export function referenceArrowHandles(
-  sourceIndex: number,
-  targetIndex: number,
-): { delta1: ArrowHandle; delta2: ArrowHandle } {
-  const verticalDirection = Math.sign(targetIndex - sourceIndex);
-  const verticalOffset = verticalDirection * 72;
-  const targetVerticalOffset =
-    verticalOffset === 0 ? 0 : -verticalOffset;
-
+/**
+ * Anchor a link on the facing edges of the two cards: bottom of the source to
+ * top of the target when the target sits below, and the reverse when the
+ * canvas has been rearranged so the lineage points upward.
+ */
+export function cardLinkAnchors(source: CardBox, target: CardBox): LinkAnchors {
+  const sourceCenterY = source.y + source.height / 2;
+  const targetCenterY = target.y + target.height / 2;
+  const downward = targetCenterY >= sourceCenterY;
+  const startX = source.x + source.width / 2;
+  const endX = target.x + target.width / 2;
+  const startY = downward ? source.y + source.height : source.y;
+  const endY = downward ? target.y : target.y + target.height;
   return {
-    delta1: { x: 240, y: verticalOffset },
-    delta2: { x: -240, y: targetVerticalOffset },
+    startX,
+    startY,
+    endX,
+    endY,
+    midX: (startX + endX) / 2,
+    midY: (startY + endY) / 2,
   };
 }

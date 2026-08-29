@@ -1,6 +1,6 @@
 {
   "name": "@mindart/ui",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -13,8 +13,7 @@
   "dependencies": {
     "@modelcontextprotocol/ext-apps": "1.7.5",
     "@modelcontextprotocol/sdk": "1.30.0",
-    "lucide": "1.28.0",
-    "mind-elixir": "5.14.0"
+    "lucide": "1.28.0"
   },
   "devDependencies": {
     "@vitest/coverage-v8": "4.1.10",

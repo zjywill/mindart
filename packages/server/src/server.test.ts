@@ -157,14 +157,12 @@ describe("MCP server", () => {
       expect(imported.structuredContent).toMatchObject({
         board: {
           id: boardId,
-          root: {
-            children: [
-              {
-                title: "upload",
-                status: "ready",
-              },
-            ],
-          },
+          nodes: [
+            {
+              title: "upload",
+              status: "ready",
+            },
+          ],
         },
       });
 

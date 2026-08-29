@@ -1,6 +1,6 @@
 ---
 name: mindart
-description: Open and operate the MindArt image genealogy canvas. Use when the user says /mindart, asks to open a MindArt board or image canvas, wants to organize reference images as a tree, sends a compiled MindArt generation request that must be generated and applied back to a card, or asks where MindArt came from and how to update it.
+description: Open and operate the MindArt image genealogy canvas. Use when the user says /mindart, asks to open a MindArt board or image canvas, wants to organize reference images on an image lineage canvas, sends a compiled MindArt generation request that must be generated and applied back to a card, or asks where MindArt came from and how to update it.
 ---
 
 # MindArt
@@ -13,22 +13,23 @@ description: Open and operate the MindArt image genealogy canvas. Use when the u
 
 ## Keep The Board A Genealogy
 
-A MindArt board records where every image came from, and the canvas draws those
-records as the map. One rule decides every connection:
+A MindArt board is a free canvas where every card records where its image came
+from, and the canvas draws those records as lineage lines. One rule decides
+every connection:
 
-**A card's parent is the image you actually fed to the generator.**
+**A card's sources are the images you actually fed to the generator.**
 
-Not what the result resembles, and not what it is about — what went in. Every
-other image you fed becomes a numbered reference on the same card, in the order
-you passed it, each with a note saying what you took from it. Reference 1 is
-always the parent.
+Not what the result resembles, and not what it is about — what went in. Each
+image you fed becomes a numbered reference on the card, in the order you passed
+it, each with a note saying what you took from it. Reference 1 is the primary
+source — pass it as `parent_node_id`.
 
 Import a generated image like this:
 
 ```
 mindart_import_image(
   board_id, source_path, title,
-  parent_node_id = <the card whose image you built on>,
+  parent_node_id = <the card whose image you primarily built on>,
   sources = [{ node_id, usage }, ...],   # every card you fed, in generator order
   prompt = <the instruction you used>
 )
@@ -36,7 +37,7 @@ mindart_import_image(
 
 Call `mindart_get_board` first whenever you do not already know the node ids.
 Never guess one. If a source image is not on the board yet, import it first —
-with no parent, because the user supplied it — and use the node id it returns.
+with no sources, because the user supplied it — and use the node id it returns.
 
 `mindart_import_image` reports the sources it recorded. If it says none were
 recorded and the image was in fact derived from cards on the board, fix it with
@@ -52,24 +53,26 @@ recorded and the image was in fact derived from cards on the board, fix it with
 | An edit of one card, guided by another | the card you edited | the edited card first, then the guide |
 | A combination of several cards | the card supplying the subject | every card you fed, in order |
 | A crop, upscale, background removal, or aspect change | the card it came from | that card |
-| Another attempt after the user rejected a result | the rejected card's **parent** | the rejected card's sources |
-| Several variants in one go | the same parent for every variant | the same sources for every variant |
+| Another attempt after the user rejected a result | the rejected card's **primary source** | the rejected card's sources |
+| Several variants in one go | the same primary source for every variant | the same sources for every variant |
 
-When several images went in and the parent is not obvious, the parent is the one
+When several images went in and the primary source is not obvious, it is the one
 supplying the subject — the character, object, or scene that carries forward.
-Style, palette, composition, and lighting references are never the parent. If
+Style, palette, composition, and lighting references are never primary. If
 two images both supply subject, pick the one that occupies more of the result,
 and failing that the one the user named first.
 
-Editing is how a branch grows: each accepted change hangs off the image it was
-made from, so the branch reads as that image's edit history. Two shapes are easy
+Editing is how a lineage grows: each accepted change references the image it was
+made from, so the chain reads as that image's edit history. Two shapes are easy
 to get wrong:
 
-- **Variants are siblings, not a chain.** Four options from one prompt all hang
-  off the same parent. Chaining them claims each was generated from the last.
-- **A retry is a sibling of what it replaces, not its child.** You fed the
-  rejected card's inputs again, not the rejected card itself, so it belongs
-  beside that card. Making it a child records a derivation that never happened.
+- **Variants share one source, they are not a chain.** Four options from one
+  prompt all reference the same source. Chaining them claims each was generated
+  from the last.
+- **A retry references what the rejected card referenced, not the rejected
+  card.** You fed the rejected card's inputs again, not the rejected card
+  itself. Linking the retry to the rejection records a derivation that never
+  happened.
 
 Do not create a card for a generation that failed.
 
@@ -93,9 +96,9 @@ per-image instructions you just used.
 
 Use `mindart_link_sources` when a card is already on the board and its sources
 are missing or wrong, including when the user describes a relationship between
-two existing images. Setting `parent_node_id` moves the card onto its primary
-source's branch; `sources` replaces its references. Omit `sources` to re-parent
-a card while keeping the references it already has.
+two existing images. Setting `parent_node_id` puts that card first in the
+reference list; `sources` replaces the references. Omit `sources` to change the
+primary source while keeping the references the card already has.
 
 ## Complete A Generation Request
 

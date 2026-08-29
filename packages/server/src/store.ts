@@ -13,20 +13,20 @@ import {
   BoardPatchSchema,
   BoardIdSchema,
   GenerationRequestInputSchema,
+  cardsById,
   createEmptyBoard,
-  flattenBoard,
-  normalizeBoard,
+  parseStoredBoard,
+  placeCard,
   validateBoard,
   type Board,
-  type BoardNode,
+  type BoardCard,
   type BoardPatch,
   type GenerationRequestInput,
   type GenerationRecord,
-  type NodeLocation,
   type NodeReference,
 } from "./model.js";
 import { compileGenerationRequest } from "./compile.js";
-import { isPathInside, resolveInside, resolveProjectRoot } from "./paths.js";
+import { resolveInside, resolveProjectRoot } from "./paths.js";
 
 const IMAGE_EXTENSIONS = new Set([
   ".apng",
@@ -63,6 +63,12 @@ const EXTENSION_BY_MIME_TYPE: Record<string, string> = {
 export const MAX_IMPORT_IMAGE_BYTES = 20 * 1024 * 1024;
 export const MAX_IMPORT_IMAGE_BASE64_LENGTH =
   Math.ceil(MAX_IMPORT_IMAGE_BYTES / 3) * 4;
+
+/**
+ * Older skills pass the v1 board root as "no source here". The root card is
+ * gone, but the meaning survives.
+ */
+const DETACHED_SENTINEL = "root";
 
 interface GenerationResult {
   board: Board;
@@ -116,37 +122,36 @@ function clone<T>(value: T): T {
   return structuredClone(value);
 }
 
-function mergeEditableTree(
-  currentRoot: Board["root"],
-  incomingRoot: Board["root"],
-): Board["root"] {
-  const currentNodes = flattenBoard(currentRoot);
-
-  const visit = (incoming: Board["root"], isRoot = false): Board["root"] => {
-    const current = currentNodes.get(incoming.id)?.node;
+/**
+ * The canvas owns titles, prompts, notes, references, and positions; the
+ * server owns generation state and assets. A save from the canvas therefore
+ * keeps the server-owned fields of every card it already knows, and anything
+ * the canvas invented arrives as a plain draft.
+ */
+function mergeEditableCards(
+  currentNodes: readonly BoardCard[],
+  incomingNodes: readonly BoardCard[],
+): BoardCard[] {
+  const current = new Map(currentNodes.map((card) => [card.id, card]));
+  return incomingNodes.map((incoming) => {
+    const existing = current.get(incoming.id);
     const next = clone(incoming);
-    next.children = incoming.children.map((child) => visit(child));
-
-    if (current) {
+    if (existing) {
       for (const field of ["status", "requestId", "asset", "error"] as const) {
-        if (current[field] === undefined) {
+        if (existing[field] === undefined) {
           delete next[field];
         } else {
-          next[field] = current[field] as never;
+          next[field] = existing[field] as never;
         }
       }
     } else {
       delete next.requestId;
       delete next.asset;
       delete next.error;
-      if (isRoot) delete next.status;
-      else next.status = "draft";
+      next.status = "draft";
     }
-
     return next;
-  };
-
-  return visit(incomingRoot, true);
+  });
 }
 
 export interface SourceInput {
@@ -157,46 +162,26 @@ export interface SourceInput {
 /**
  * Turn a list of source cards into the references a derived card carries.
  *
- * The tree parent is always reference 1 when it has an image of its own: that
- * is what makes a branch a genealogy rather than a filing cabinet. Everything
- * else becomes a numbered cross-branch reference with its own ref line. The
- * parent may also appear in `sources` by its real node id, which is how it
- * gets a usage note of its own — the same convention requestGeneration uses
- * for the list the canvas sends.
- *
  * Unknown or image-less sources throw rather than being skipped. A silently
- * dropped source is how a board ends up as a row of unrelated siblings, which
- * is exactly the failure this helper exists to prevent.
+ * dropped source is how a board ends up as a scatter of unrelated cards,
+ * which is exactly the failure this helper exists to prevent.
  */
 function buildSourceReferences(
-  nodes: Map<string, NodeLocation>,
-  parent: BoardNode,
+  cards: Map<string, BoardCard>,
   nodeId: string,
   sources: readonly SourceInput[],
 ): NodeReference[] {
   const refs: NodeReference[] = [];
   const seen = new Set<string>();
-  const usageByNode = new Map(
-    sources.map((source) => [source.nodeId, source.usage]),
-  );
-
-  if (parent.asset) {
-    refs.push({
-      order: 1,
-      source: "parent",
-      usage: usageByNode.get(parent.id) ?? "",
-    });
-    seen.add(parent.id);
-  }
 
   for (const source of sources) {
     if (seen.has(source.nodeId)) continue;
     if (source.nodeId === nodeId) {
       throw new Error("A card cannot be its own source");
     }
-    const sourceNode = nodes.get(source.nodeId)?.node;
-    if (!sourceNode) throw new Error(`Source node not found: ${source.nodeId}`);
-    if (!sourceNode.asset) {
+    const sourceCard = cards.get(source.nodeId);
+    if (!sourceCard) throw new Error(`Source node not found: ${source.nodeId}`);
+    if (!sourceCard.asset) {
       throw new Error(
         `Source node ${source.nodeId} has no image to reference yet`,
       );
@@ -206,14 +191,34 @@ function buildSourceReferences(
     }
     refs.push({
       order: refs.length + 1,
-      source: sourceNode.id,
+      source: sourceCard.id,
       usage: source.usage,
-      refLineId: `ref-${sourceNode.id}-${nodeId}`,
     });
-    seen.add(sourceNode.id);
+    seen.add(sourceCard.id);
   }
 
   return refs;
+}
+
+/**
+ * Put the primary source first without losing anyone's usage note. The
+ * detached sentinel — the v1 board root — means "no primary source".
+ */
+function orderSources(
+  sources: readonly SourceInput[],
+  primaryNodeId: string | undefined,
+): SourceInput[] {
+  if (!primaryNodeId || primaryNodeId === DETACHED_SENTINEL) {
+    return [...sources];
+  }
+  const primary = sources.find((source) => source.nodeId === primaryNodeId) ?? {
+    nodeId: primaryNodeId,
+    usage: "",
+  };
+  return [
+    primary,
+    ...sources.filter((source) => source.nodeId !== primaryNodeId),
+  ];
 }
 
 export class MindArtStore {
@@ -284,7 +289,7 @@ export class MindArtStore {
 
   async getBoard(boardId: string): Promise<Board> {
     const raw = await readFile(this.boardFile(boardId), "utf8");
-    return validateBoard(JSON.parse(raw) as Board);
+    return parseStoredBoard(JSON.parse(raw));
   }
 
   async hasBoard(boardId: string): Promise<boolean> {
@@ -304,8 +309,8 @@ export class MindArtStore {
       if (parsedPatch.styleNote !== undefined) {
         board.styleNote = parsedPatch.styleNote;
       }
-      if (parsedPatch.root !== undefined) {
-        board.root = mergeEditableTree(board.root, parsedPatch.root);
+      if (parsedPatch.nodes !== undefined) {
+        board.nodes = mergeEditableCards(board.nodes, parsedPatch.nodes);
       }
       return board;
     });
@@ -320,31 +325,15 @@ export class MindArtStore {
     let result: GenerationResult | undefined;
 
     const board = await this.mutateBoard(boardId, (draft) => {
-      const nodes = flattenBoard(draft.root);
-      const location = nodes.get(nodeId);
-      if (!location) throw new Error(`Node not found: ${nodeId}`);
-      if (!location.parent && nodeId === draft.root.id) {
-        throw new Error("The board root cannot be generated");
-      }
+      const cards = cardsById(draft);
+      const card = cards.get(nodeId);
+      if (!card) throw new Error(`Node not found: ${nodeId}`);
 
       const refs: NodeReference[] = [];
       const seen = new Set<string>();
-      const requestedByNode = new Map(
-        request.refs.map((reference) => [reference.sourceNodeId, reference]),
-      );
-
-      if (location.parent?.asset) {
-        refs.push({
-          order: 1,
-          source: "parent",
-          usage: requestedByNode.get(location.parent.id)?.usage ?? "",
-        });
-        seen.add(location.parent.id);
-      }
-
       for (const reference of request.refs) {
         if (seen.has(reference.sourceNodeId)) continue;
-        const source = nodes.get(reference.sourceNodeId)?.node;
+        const source = cards.get(reference.sourceNodeId);
         if (!source?.asset) {
           throw new Error(
             `Reference node ${reference.sourceNodeId} has no image asset`,
@@ -360,20 +349,19 @@ export class MindArtStore {
           order: refs.length + 1,
           source: source.id,
           usage: reference.usage,
-          refLineId: `ref-${source.id}-${nodeId}`,
         });
         seen.add(source.id);
       }
 
-      location.node.prompt = request.prompt;
-      if (request.note !== undefined) location.node.note = request.note;
-      location.node.refs = refs;
-      location.node.status = "queued";
-      delete location.node.error;
+      card.prompt = request.prompt;
+      if (request.note !== undefined) card.note = request.note;
+      if (refs.length) card.refs = refs;
+      else delete card.refs;
+      card.status = "queued";
+      delete card.error;
 
       const requestId = `req-${randomUUID().slice(0, 12)}`;
-      location.node.requestId = requestId;
-      normalizeBoard(draft);
+      card.requestId = requestId;
 
       const compiled = compileGenerationRequest(
         draft,
@@ -420,18 +408,18 @@ export class MindArtStore {
     return this.mutateBoard(located.boardId, (board) => {
       const request = board.requests[requestId];
       if (!request) throw new Error(`Request not found: ${requestId}`);
-      const node = flattenBoard(board.root).get(request.nodeId)?.node;
-      if (!node) throw new Error(`Request node not found: ${request.nodeId}`);
+      const card = board.nodes.find((node) => node.id === request.nodeId);
+      if (!card) throw new Error(`Request node not found: ${request.nodeId}`);
 
       const now = new Date().toISOString();
       request.status = "ready";
       request.asset = relativeAsset;
       request.resolvedAt = now;
       delete request.error;
-      node.status = "ready";
-      node.asset = relativeAsset;
-      node.requestId = requestId;
-      delete node.error;
+      card.status = "ready";
+      card.asset = relativeAsset;
+      card.requestId = requestId;
+      delete card.error;
       return board;
     });
   }
@@ -441,15 +429,15 @@ export class MindArtStore {
     return this.mutateBoard(located.boardId, (board) => {
       const request = board.requests[requestId];
       if (!request) throw new Error(`Request not found: ${requestId}`);
-      const node = flattenBoard(board.root).get(request.nodeId)?.node;
-      if (!node) throw new Error(`Request node not found: ${request.nodeId}`);
+      const card = board.nodes.find((node) => node.id === request.nodeId);
+      if (!card) throw new Error(`Request node not found: ${request.nodeId}`);
 
       const now = new Date().toISOString();
       request.status = "error";
       request.error = message;
       request.resolvedAt = now;
-      node.status = "error";
-      node.error = message;
+      card.status = "error";
+      card.error = message;
       return board;
     });
   }
@@ -464,6 +452,8 @@ export class MindArtStore {
     sources?: readonly SourceInput[];
     prompt?: string;
     title?: string;
+    x?: number;
+    y?: number;
   }): Promise<{ board: Board; nodeId: string; refs: NodeReference[] }> {
     const hasSourcePath = Boolean(options.sourcePath?.trim());
     const hasImageData = Boolean(options.imageData?.trim());
@@ -504,49 +494,52 @@ export class MindArtStore {
     }
 
     const updated = await this.mutateBoard(board.id, (draft) => {
-      const nodes = flattenBoard(draft.root);
-      const parent = options.parentNodeId
-        ? nodes.get(options.parentNodeId)?.node
-        : draft.root;
-      if (!parent) {
+      const cards = cardsById(draft);
+      const sources = orderSources(
+        options.sources ?? [],
+        options.parentNodeId,
+      );
+      const primary = sources[0] ? cards.get(sources[0].nodeId) : undefined;
+      if (
+        options.parentNodeId &&
+        options.parentNodeId !== DETACHED_SENTINEL &&
+        !cards.has(options.parentNodeId)
+      ) {
         throw new Error(`Parent node not found: ${options.parentNodeId}`);
       }
-      const refs = buildSourceReferences(
-        nodes,
-        parent,
-        nodeId,
-        options.sources ?? [],
-      );
+      const refs = buildSourceReferences(cards, nodeId, sources);
       const prompt = options.prompt?.trim();
-      parent.children.push({
+      const position =
+        options.x !== undefined && options.y !== undefined
+          ? { x: options.x, y: options.y }
+          : placeCard(draft.nodes, primary);
+      draft.nodes.push({
         id: nodeId,
         title: options.title?.trim() || defaultTitle || "素材图",
         status: "ready",
         // The instruction that produced the image belongs on the card, so the
-        // branch reads as a record of how the image was made and the card can
+        // lineage reads as a record of how the image was made and the card can
         // be regenerated from the canvas without retyping it.
         ...(prompt ? { prompt } : {}),
         asset: relativeAsset,
-        expanded: true,
-        children: [],
-        refs,
+        ...(refs.length ? { refs } : {}),
+        ...position,
       });
       return draft;
     });
 
     // normalizeBoard runs inside the write, so report the references that
     // actually survived rather than the ones we hoped to write.
-    const stored = flattenBoard(updated.root).get(nodeId)?.node;
+    const stored = updated.nodes.find((card) => card.id === nodeId);
     return { board: updated, nodeId, refs: stored?.refs ?? [] };
   }
 
   /**
    * Record where an existing card's image came from.
    *
-   * In MindArt the tree parent *is* the primary source, so setting the primary
-   * source moves the card onto that branch. Everything else becomes a
-   * cross-branch reference. This is the repair path for a board whose cards
-   * were dropped in flat before anyone said how they relate.
+   * The first reference is the primary source, so setting parentNodeId moves
+   * that card to the front of the list. This is the repair path for a board
+   * whose cards were dropped in flat before anyone said how they relate.
    */
   async linkSources(
     boardId: string,
@@ -557,60 +550,31 @@ export class MindArtStore {
     },
   ): Promise<{ board: Board; nodeId: string; refs: NodeReference[] }> {
     const board = await this.mutateBoard(boardId, (draft) => {
-      const nodes = flattenBoard(draft.root);
-      const location = nodes.get(nodeId);
-      if (!location) throw new Error(`Node not found: ${nodeId}`);
-      if (!location.parent) {
-        throw new Error("The board root has no sources");
-      }
-
-      const originalParent = location.parent;
-      let parent = location.parent;
+      const cards = cardsById(draft);
+      const card = cards.get(nodeId);
+      if (!card) throw new Error(`Node not found: ${nodeId}`);
       if (
-        options.parentNodeId !== undefined &&
-        options.parentNodeId !== parent.id
+        options.parentNodeId &&
+        options.parentNodeId !== DETACHED_SENTINEL &&
+        !cards.has(options.parentNodeId)
       ) {
-        const nextParent = nodes.get(options.parentNodeId)?.node;
-        if (!nextParent) {
-          throw new Error(`Parent node not found: ${options.parentNodeId}`);
-        }
-        if (nextParent.id === nodeId) {
-          throw new Error("A card cannot be its own source");
-        }
-        // Re-parenting a card under its own descendant would take that whole
-        // branch off the board with it, so refuse rather than lose the subtree.
-        if (flattenBoard(location.node).has(nextParent.id)) {
-          throw new Error(
-            `Cannot move ${nodeId} under its own descendant ${nextParent.id}`,
-          );
-        }
-        parent.children = parent.children.filter(
-          (child) => child.id !== nodeId,
-        );
-        nextParent.children.push(location.node);
-        parent = nextParent;
+        throw new Error(`Parent node not found: ${options.parentNodeId}`);
       }
 
-      // Omitting the source list means "only change the primary source", so
-      // keep whatever references the card already carried, usage notes
-      // included. The parent's note describes the branch it hung from, so it
-      // travels along only when the card is staying on that branch.
       const sources =
         options.sources ??
-        (location.node.refs ?? []).flatMap((reference) => {
-          if (reference.source !== "parent") {
-            return [{ nodeId: reference.source, usage: reference.usage }];
-          }
-          return parent.id === originalParent.id && reference.usage
-            ? [{ nodeId: parent.id, usage: reference.usage }]
-            : [];
-        });
-
-      location.node.refs = buildSourceReferences(nodes, parent, nodeId, sources);
+        (card.refs ?? []).map((reference) => ({
+          nodeId: reference.source,
+          usage: reference.usage,
+        }));
+      const ordered = orderSources(sources, options.parentNodeId);
+      const refs = buildSourceReferences(cards, nodeId, ordered);
+      if (refs.length) card.refs = refs;
+      else delete card.refs;
       return draft;
     });
 
-    const stored = flattenBoard(board.root).get(nodeId)?.node;
+    const stored = board.nodes.find((card) => card.id === nodeId);
     return { board, nodeId, refs: stored?.refs ?? [] };
   }
 

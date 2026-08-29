@@ -2359,21 +2359,6 @@ function handleReadonlyResult(payload) {
 	payload.value = Object.freeze(payload.value);
 	return payload;
 }
-var $ZodLazy = /*@__PURE__*/ $constructor("$ZodLazy", (inst, def) => {
-	$ZodType.init(inst, def);
-	defineLazy(inst._zod, "innerType", () => {
-		const d = def;
-		if (!d._cachedInner) d._cachedInner = def.getter();
-		return d._cachedInner;
-	});
-	defineLazy(inst._zod, "pattern", () => inst._zod.innerType?._zod?.pattern);
-	defineLazy(inst._zod, "propValues", () => inst._zod.innerType?._zod?.propValues);
-	defineLazy(inst._zod, "optin", () => inst._zod.innerType?._zod?.optin ?? void 0);
-	defineLazy(inst._zod, "optout", () => inst._zod.innerType?._zod?.optout ?? void 0);
-	inst._zod.parse = (payload, ctx) => {
-		return inst._zod.innerType._zod.run(payload, ctx);
-	};
-});
 var $ZodCustom = /*@__PURE__*/ $constructor("$ZodCustom", (inst, def) => {
 	$ZodCheck.init(inst, def);
 	$ZodType.init(inst, def);
@@ -4620,18 +4605,6 @@ function readonly(innerType) {
 	return new ZodReadonly$1({
 		type: "readonly",
 		innerType
-	});
-}
-var ZodLazy$1 = /*@__PURE__*/ $constructor("ZodLazy", (inst, def) => {
-	$ZodLazy.init(inst, def);
-	ZodType$1.init(inst, def);
-	inst._zod.processJSONSchema = (ctx, json, params) => lazyProcessor(inst, ctx, json, params);
-	inst.unwrap = () => inst._zod.def.getter();
-});
-function lazy(getter) {
-	return new ZodLazy$1({
-		type: "lazy",
-		getter
 	});
 }
 var ZodCustom = /*@__PURE__*/ $constructor("ZodCustom", (inst, def) => {
@@ -19996,10 +19969,9 @@ var BoardIdSchema = string().trim().regex(/^[a-z0-9][a-z0-9-]{0,63}$/u, "Invalid
 var NodeReferenceSchema = object$1({
 	order: number().int().min(1).max(5),
 	source: string().trim().min(1),
-	usage: string().max(2e3).default(""),
-	refLineId: string().trim().min(1).optional()
+	usage: string().max(2e3).default("")
 });
-var BoardNodeSchema = lazy(() => object$1({
+var BoardCardSchema = object$1({
 	id: string().trim().min(1).max(128),
 	title: string().max(200).default(""),
 	status: _enum(NODE_STATUSES).optional(),
@@ -20009,13 +19981,8 @@ var BoardNodeSchema = lazy(() => object$1({
 	requestId: string().trim().min(1).optional(),
 	asset: string().refine(safeAssetPath, "Asset must be inside assets/").optional(),
 	error: string().max(1e4).optional(),
-	expanded: boolean().optional(),
-	children: array(BoardNodeSchema).default([])
-}));
-var ReferenceLineSchema = object$1({
-	id: string().trim().min(1),
-	from: string().trim().min(1),
-	to: string().trim().min(1)
+	x: number().finite(),
+	y: number().finite()
 });
 var GenerationReferenceSchema = object$1({
 	node: string().trim().min(1),
@@ -20038,12 +20005,11 @@ var GenerationRecordSchema = object$1({
 	resolvedAt: datetime().optional()
 });
 var BoardSchema = object$1({
-	version: literal(1),
+	version: literal(2),
 	id: BoardIdSchema,
 	title: string().trim().min(1).max(200),
 	styleNote: string().max(1e4).default(""),
-	root: BoardNodeSchema,
-	refLines: array(ReferenceLineSchema).default([]),
+	nodes: array(BoardCardSchema).default([]),
 	requests: record(string(), GenerationRecordSchema).default({}),
 	createdAt: datetime(),
 	updatedAt: datetime()
@@ -20051,7 +20017,7 @@ var BoardSchema = object$1({
 var BoardPatchSchema = object$1({
 	title: string().trim().min(1).max(200).optional(),
 	styleNote: string().max(1e4).optional(),
-	root: BoardNodeSchema.optional()
+	nodes: array(BoardCardSchema).optional()
 }).strict();
 var RequestReferenceInputSchema = object$1({
 	sourceNodeId: string().trim().min(1),
@@ -20062,92 +20028,157 @@ var GenerationRequestInputSchema = object$1({
 	note: string().max(1e4).optional(),
 	refs: array(RequestReferenceInputSchema).max(5).default([])
 });
-function flattenBoard(root) {
-	const nodes = /* @__PURE__ */ new Map();
-	const visit = (node, parent) => {
-		if (nodes.has(node.id)) throw new Error(`Duplicate node id: ${node.id}`);
-		nodes.set(node.id, {
-			node,
-			parent
-		});
-		for (const child of node.children) visit(child, node);
-	};
-	visit(root, null);
-	return nodes;
+function cardsById(board) {
+	const cards = /* @__PURE__ */ new Map();
+	for (const card of board.nodes) {
+		if (cards.has(card.id)) throw new Error(`Duplicate node id: ${card.id}`);
+		cards.set(card.id, card);
+	}
+	return cards;
 }
 function normalizeBoard(board) {
-	const nodes = flattenBoard(board.root);
-	const validRequests = Object.fromEntries(Object.entries(board.requests).filter(([, request]) => nodes.has(request.nodeId)));
-	for (const { node, parent } of nodes.values()) {
-		if (!parent) {
-			node.refs = [];
-			continue;
-		}
+	const cards = cardsById(board);
+	for (const card of cards.values()) {
 		const seenSources = /* @__PURE__ */ new Set();
 		const normalizedRefs = [];
-		const parentRef = node.refs?.find((reference) => reference.order === 1 || reference.source === "parent");
-		if (parent.asset) {
-			normalizedRefs.push({
-				order: 1,
-				source: "parent",
-				usage: parentRef?.usage ?? ""
-			});
-			seenSources.add(parent.id);
-		}
-		for (const reference of node.refs ?? []) {
-			if (reference.source === "parent") continue;
-			const source = nodes.get(reference.source)?.node;
-			if (!source?.asset || source.id === node.id || seenSources.has(source.id)) continue;
+		const orderedRefs = [...card.refs ?? []].sort((a, b) => a.order - b.order);
+		for (const reference of orderedRefs) {
+			const source = cards.get(reference.source);
+			if (!source?.asset || source.id === card.id || seenSources.has(source.id)) continue;
 			if (normalizedRefs.length >= 5) break;
 			normalizedRefs.push({
 				order: normalizedRefs.length + 1,
 				source: source.id,
-				usage: reference.usage,
-				refLineId: reference.refLineId ?? `ref-${source.id}-${node.id}`
+				usage: reference.usage
 			});
 			seenSources.add(source.id);
 		}
-		node.refs = normalizedRefs;
-		if (node.requestId && !validRequests[node.requestId]) delete node.requestId;
+		if (normalizedRefs.length) card.refs = normalizedRefs;
+		else delete card.refs;
+		if (card.requestId && !board.requests[card.requestId]) delete card.requestId;
 	}
-	const refLines = [];
-	for (const { node } of nodes.values()) for (const reference of node.refs ?? []) {
-		if (reference.source === "parent") continue;
-		const id = reference.refLineId ?? `ref-${reference.source}-${node.id}`;
-		reference.refLineId = id;
-		refLines.push({
-			id,
-			from: reference.source,
-			to: node.id
-		});
-	}
-	board.refLines = refLines;
-	board.requests = validRequests;
+	board.requests = Object.fromEntries(Object.entries(board.requests).filter(([, request]) => cards.has(request.nodeId)));
 	return board;
 }
 function validateBoard(board) {
 	const parsed = BoardSchema.parse(board);
 	normalizeBoard(parsed);
-	const nodes = flattenBoard(parsed.root);
+	const cards = cardsById(parsed);
 	for (const [requestId, request] of Object.entries(parsed.requests)) {
-		if (!nodes.get(request.nodeId)?.node) throw new Error(`Request ${requestId} references missing node`);
-		for (const reference of request.refs) if (!nodes.has(reference.node)) throw new Error(`Request ${requestId} references missing source ${reference.node}`);
+		if (!cards.has(request.nodeId)) throw new Error(`Request ${requestId} references missing node`);
+		for (const reference of request.refs) if (!cards.has(reference.node)) throw new Error(`Request ${requestId} references missing source ${reference.node}`);
 	}
 	return parsed;
 }
+/**
+* A v1 board is a tree, so lay it out once as the canvas it becomes: children
+* below their parent, subtrees packed side by side. The tree parent turns into
+* the card's first reference — which is what it always meant.
+*/
+function migrateBoardV1(legacy) {
+	const parents = /* @__PURE__ */ new Map();
+	const flat = [];
+	const visit = (node, parent) => {
+		parents.set(node.id, parent);
+		if (parent) flat.push(node);
+		node.children.forEach((child) => visit(child, node));
+	};
+	visit(legacy.root, null);
+	const slots = /* @__PURE__ */ new Map();
+	const subtreeSlots = (node) => {
+		const width = node.children.length ? node.children.reduce((sum, child) => sum + subtreeSlots(child), 0) : 1;
+		slots.set(node.id, width);
+		return width;
+	};
+	subtreeSlots(legacy.root);
+	const positions = /* @__PURE__ */ new Map();
+	const layout = (node, left, depth) => {
+		const width = slots.get(node.id) ?? 1;
+		positions.set(node.id, {
+			x: (left + width / 2 - .5) * 340,
+			y: depth * 560
+		});
+		let childLeft = left;
+		for (const child of node.children) {
+			layout(child, childLeft, depth + 1);
+			childLeft += slots.get(child.id) ?? 1;
+		}
+	};
+	let rootChildLeft = 0;
+	for (const child of legacy.root.children) {
+		layout(child, rootChildLeft, 0);
+		rootChildLeft += slots.get(child.id) ?? 1;
+	}
+	const nodes = flat.map((node) => {
+		const position = positions.get(node.id) ?? {
+			x: 0,
+			y: 0
+		};
+		const parent = parents.get(node.id);
+		const refs = (node.refs ?? []).map((reference) => ({
+			order: reference.order,
+			source: reference.source === "parent" ? parent?.id ?? "" : reference.source,
+			usage: reference.usage
+		})).filter((reference) => reference.source && reference.source !== "root");
+		return {
+			id: node.id,
+			title: node.title,
+			...node.status === void 0 ? {} : { status: node.status },
+			...node.prompt === void 0 ? {} : { prompt: node.prompt },
+			...node.note === void 0 ? {} : { note: node.note },
+			...refs.length ? { refs } : {},
+			...node.requestId === void 0 ? {} : { requestId: node.requestId },
+			...node.asset === void 0 ? {} : { asset: node.asset },
+			...node.error === void 0 ? {} : { error: node.error },
+			x: position.x,
+			y: position.y
+		};
+	});
+	return {
+		version: 2,
+		id: legacy.id,
+		title: legacy.title,
+		styleNote: legacy.styleNote,
+		nodes,
+		requests: legacy.requests,
+		createdAt: legacy.createdAt,
+		updatedAt: legacy.updatedAt
+	};
+}
+/** Parse a stored board of any known version into the current shape. */
+function parseStoredBoard(raw) {
+	if (raw?.version === 1) return validateBoard(migrateBoardV1(raw));
+	return validateBoard(raw);
+}
+/**
+* Pick a spot for a card the server has to place itself — an import the
+* canvas did not position. Derived cards go below their primary source, the
+* way generations grow; sourceless cards line up along the top. Slide right
+* until the slot is free.
+*/
+function placeCard(nodes, primary) {
+	const start = primary ? {
+		x: primary.x,
+		y: primary.y + 560
+	} : {
+		x: nodes.length ? Math.max(...nodes.map((card) => card.x)) + 340 : 0,
+		y: nodes.length ? Math.min(...nodes.map((card) => card.y)) : 0
+	};
+	const occupied = (x, y) => nodes.some((card) => Math.abs(card.x - x) < 320 && Math.abs(card.y - y) < 540);
+	let { x } = start;
+	while (occupied(x, start.y)) x += 340;
+	return {
+		x,
+		y: start.y
+	};
+}
 function createEmptyBoard(id, title, now = (/* @__PURE__ */ new Date()).toISOString()) {
 	return {
-		version: 1,
+		version: 2,
 		id: BoardIdSchema.parse(id),
 		title,
 		styleNote: "",
-		root: {
-			id: "root",
-			title,
-			expanded: true,
-			children: []
-		},
-		refLines: [],
+		nodes: [],
 		requests: {},
 		createdAt: now,
 		updatedAt: now
@@ -20155,29 +20186,21 @@ function createEmptyBoard(id, title, now = (/* @__PURE__ */ new Date()).toISOStr
 }
 //#endregion
 //#region ../server/src/compile.ts
-function resolveReferenceNodeId(node, parent, reference) {
-	if (reference.source === "parent") {
-		if (!parent) throw new Error(`Node ${node.id} has a parent reference without a parent`);
-		return parent.id;
-	}
-	return reference.source;
-}
 function compileGenerationRequest(board, nodeId, boardDirectory, requestId) {
-	const nodes = flattenBoard(board.root);
-	const location = nodes.get(nodeId);
-	if (!location) throw new Error(`Node not found: ${nodeId}`);
-	const prompt = location.node.prompt?.trim();
+	const cards = cardsById(board);
+	const card = cards.get(nodeId);
+	if (!card) throw new Error(`Node not found: ${nodeId}`);
+	const prompt = card.prompt?.trim();
 	if (!prompt) throw new Error("Generation prompt is required");
-	const nodeRefs = location.node.refs ?? [];
+	const nodeRefs = card.refs ?? [];
 	if (nodeRefs.length > 5) throw new Error("A generation can use at most 5 reference images");
 	const refs = nodeRefs.map((reference) => {
-		const sourceNodeId = resolveReferenceNodeId(location.node, location.parent, reference);
-		const sourceNode = nodes.get(sourceNodeId)?.node;
-		if (!sourceNode?.asset) throw new Error(`Reference ${sourceNodeId} has no image asset`);
+		const sourceCard = cards.get(reference.source);
+		if (!sourceCard?.asset) throw new Error(`Reference ${reference.source} has no image asset`);
 		return {
-			node: sourceNodeId,
+			node: sourceCard.id,
 			usage: reference.usage,
-			asset: sourceNode.asset
+			asset: sourceCard.asset
 		};
 	});
 	const lines = ["请生成一张图片。", `结合指令（目标卡提示词）：${prompt}`];
@@ -20185,7 +20208,7 @@ function compileGenerationRequest(board, nodeId, boardDirectory, requestId) {
 		lines.push(`参考图 ${index + 1}：${path.resolve(boardDirectory, reference.asset)}`, `  取用说明：${reference.usage}`);
 	});
 	if (board.styleNote.trim()) lines.push(`风格设定（画板级）：${board.styleNote.trim()}`);
-	if (location.node.note?.trim()) lines.push(`本卡备注：${location.node.note.trim()}`);
+	if (card.note?.trim()) lines.push(`本卡备注：${card.note.trim()}`);
 	if (refs.length > 0) lines.push("参考图用法：必须把上列图片文件本身逐张输入出图模型，传入顺序与编号一致；不得先改写成文字描述再生成。", "若出图模型接不下全部参考图，先向用户说明并确认取舍，不要静默丢弃任何一张；确实无法完成时调用 mindart_report_error。");
 	lines.push(`产出要求：完成后调用 mindart_apply_result(request_id="${requestId}", image_path=...)。不要只把图片贴在对话里。`);
 	return {
@@ -20242,6 +20265,11 @@ var EXTENSION_BY_MIME_TYPE = {
 	"image/webp": ".webp"
 };
 var MAX_IMPORT_IMAGE_BASE64_LENGTH = Math.ceil(20971520 / 3) * 4;
+/**
+* Older skills pass the v1 board root as "no source here". The root card is
+* gone, but the meaning survives.
+*/
+var DETACHED_SENTINEL = "root";
 function safeFileStem(value) {
 	return value.normalize("NFKD").replace(/[^\w.-]+/gu, "-").replace(/^-+|-+$/gu, "") || "image";
 }
@@ -20263,72 +20291,69 @@ function decodeImageData(data) {
 function clone(value) {
 	return structuredClone(value);
 }
-function mergeEditableTree(currentRoot, incomingRoot) {
-	const currentNodes = flattenBoard(currentRoot);
-	const visit = (incoming, isRoot = false) => {
-		const current = currentNodes.get(incoming.id)?.node;
+/**
+* The canvas owns titles, prompts, notes, references, and positions; the
+* server owns generation state and assets. A save from the canvas therefore
+* keeps the server-owned fields of every card it already knows, and anything
+* the canvas invented arrives as a plain draft.
+*/
+function mergeEditableCards(currentNodes, incomingNodes) {
+	const current = new Map(currentNodes.map((card) => [card.id, card]));
+	return incomingNodes.map((incoming) => {
+		const existing = current.get(incoming.id);
 		const next = clone(incoming);
-		next.children = incoming.children.map((child) => visit(child));
-		if (current) for (const field of [
+		if (existing) for (const field of [
 			"status",
 			"requestId",
 			"asset",
 			"error"
-		]) if (current[field] === void 0) delete next[field];
-		else next[field] = current[field];
+		]) if (existing[field] === void 0) delete next[field];
+		else next[field] = existing[field];
 		else {
 			delete next.requestId;
 			delete next.asset;
 			delete next.error;
-			if (isRoot) delete next.status;
-			else next.status = "draft";
+			next.status = "draft";
 		}
 		return next;
-	};
-	return visit(incomingRoot, true);
+	});
 }
 /**
 * Turn a list of source cards into the references a derived card carries.
 *
-* The tree parent is always reference 1 when it has an image of its own: that
-* is what makes a branch a genealogy rather than a filing cabinet. Everything
-* else becomes a numbered cross-branch reference with its own ref line. The
-* parent may also appear in `sources` by its real node id, which is how it
-* gets a usage note of its own — the same convention requestGeneration uses
-* for the list the canvas sends.
-*
 * Unknown or image-less sources throw rather than being skipped. A silently
-* dropped source is how a board ends up as a row of unrelated siblings, which
-* is exactly the failure this helper exists to prevent.
+* dropped source is how a board ends up as a scatter of unrelated cards,
+* which is exactly the failure this helper exists to prevent.
 */
-function buildSourceReferences(nodes, parent, nodeId, sources) {
+function buildSourceReferences(cards, nodeId, sources) {
 	const refs = [];
 	const seen = /* @__PURE__ */ new Set();
-	const usageByNode = new Map(sources.map((source) => [source.nodeId, source.usage]));
-	if (parent.asset) {
-		refs.push({
-			order: 1,
-			source: "parent",
-			usage: usageByNode.get(parent.id) ?? ""
-		});
-		seen.add(parent.id);
-	}
 	for (const source of sources) {
 		if (seen.has(source.nodeId)) continue;
 		if (source.nodeId === nodeId) throw new Error("A card cannot be its own source");
-		const sourceNode = nodes.get(source.nodeId)?.node;
-		if (!sourceNode) throw new Error(`Source node not found: ${source.nodeId}`);
-		if (!sourceNode.asset) throw new Error(`Source node ${source.nodeId} has no image to reference yet`);
+		const sourceCard = cards.get(source.nodeId);
+		if (!sourceCard) throw new Error(`Source node not found: ${source.nodeId}`);
+		if (!sourceCard.asset) throw new Error(`Source node ${source.nodeId} has no image to reference yet`);
 		if (refs.length >= 5) throw new Error("A card can carry at most 5 reference images");
 		refs.push({
 			order: refs.length + 1,
-			source: sourceNode.id,
-			usage: source.usage,
-			refLineId: `ref-${sourceNode.id}-${nodeId}`
+			source: sourceCard.id,
+			usage: source.usage
 		});
-		seen.add(sourceNode.id);
+		seen.add(sourceCard.id);
 	}
 	return refs;
+}
+/**
+* Put the primary source first without losing anyone's usage note. The
+* detached sentinel — the v1 board root — means "no primary source".
+*/
+function orderSources(sources, primaryNodeId) {
+	if (!primaryNodeId || primaryNodeId === DETACHED_SENTINEL) return [...sources];
+	return [sources.find((source) => source.nodeId === primaryNodeId) ?? {
+		nodeId: primaryNodeId,
+		usage: ""
+	}, ...sources.filter((source) => source.nodeId !== primaryNodeId)];
 }
 var MindArtStore = class {
 	projectRoot;
@@ -20381,7 +20406,7 @@ var MindArtStore = class {
 	}
 	async getBoard(boardId) {
 		const raw = await readFile(this.boardFile(boardId), "utf8");
-		return validateBoard(JSON.parse(raw));
+		return parseStoredBoard(JSON.parse(raw));
 	}
 	async hasBoard(boardId) {
 		try {
@@ -20397,7 +20422,7 @@ var MindArtStore = class {
 		return this.mutateBoard(boardId, (board) => {
 			if (parsedPatch.title !== void 0) board.title = parsedPatch.title;
 			if (parsedPatch.styleNote !== void 0) board.styleNote = parsedPatch.styleNote;
-			if (parsedPatch.root !== void 0) board.root = mergeEditableTree(board.root, parsedPatch.root);
+			if (parsedPatch.nodes !== void 0) board.nodes = mergeEditableCards(board.nodes, parsedPatch.nodes);
 			return board;
 		});
 	}
@@ -20405,43 +20430,32 @@ var MindArtStore = class {
 		const request = GenerationRequestInputSchema.parse(input);
 		let result;
 		const board = await this.mutateBoard(boardId, (draft) => {
-			const nodes = flattenBoard(draft.root);
-			const location = nodes.get(nodeId);
-			if (!location) throw new Error(`Node not found: ${nodeId}`);
-			if (!location.parent && nodeId === draft.root.id) throw new Error("The board root cannot be generated");
+			const cards = cardsById(draft);
+			const card = cards.get(nodeId);
+			if (!card) throw new Error(`Node not found: ${nodeId}`);
 			const refs = [];
 			const seen = /* @__PURE__ */ new Set();
-			const requestedByNode = new Map(request.refs.map((reference) => [reference.sourceNodeId, reference]));
-			if (location.parent?.asset) {
-				refs.push({
-					order: 1,
-					source: "parent",
-					usage: requestedByNode.get(location.parent.id)?.usage ?? ""
-				});
-				seen.add(location.parent.id);
-			}
 			for (const reference of request.refs) {
 				if (seen.has(reference.sourceNodeId)) continue;
-				const source = nodes.get(reference.sourceNodeId)?.node;
+				const source = cards.get(reference.sourceNodeId);
 				if (!source?.asset) throw new Error(`Reference node ${reference.sourceNodeId} has no image asset`);
 				if (source.id === nodeId) throw new Error("A node cannot reference itself");
 				if (refs.length >= 5) throw new Error("A generation can use at most 5 reference images");
 				refs.push({
 					order: refs.length + 1,
 					source: source.id,
-					usage: reference.usage,
-					refLineId: `ref-${source.id}-${nodeId}`
+					usage: reference.usage
 				});
 				seen.add(source.id);
 			}
-			location.node.prompt = request.prompt;
-			if (request.note !== void 0) location.node.note = request.note;
-			location.node.refs = refs;
-			location.node.status = "queued";
-			delete location.node.error;
+			card.prompt = request.prompt;
+			if (request.note !== void 0) card.note = request.note;
+			if (refs.length) card.refs = refs;
+			else delete card.refs;
+			card.status = "queued";
+			delete card.error;
 			const requestId = `req-${randomUUID().slice(0, 12)}`;
-			location.node.requestId = requestId;
-			normalizeBoard(draft);
+			card.requestId = requestId;
 			const compiled = compileGenerationRequest(draft, nodeId, this.boardDirectory(boardId), requestId);
 			draft.requests[requestId] = {
 				nodeId,
@@ -20476,17 +20490,17 @@ var MindArtStore = class {
 		return this.mutateBoard(located.boardId, (board) => {
 			const request = board.requests[requestId];
 			if (!request) throw new Error(`Request not found: ${requestId}`);
-			const node = flattenBoard(board.root).get(request.nodeId)?.node;
-			if (!node) throw new Error(`Request node not found: ${request.nodeId}`);
+			const card = board.nodes.find((node) => node.id === request.nodeId);
+			if (!card) throw new Error(`Request node not found: ${request.nodeId}`);
 			const now = (/* @__PURE__ */ new Date()).toISOString();
 			request.status = "ready";
 			request.asset = relativeAsset;
 			request.resolvedAt = now;
 			delete request.error;
-			node.status = "ready";
-			node.asset = relativeAsset;
-			node.requestId = requestId;
-			delete node.error;
+			card.status = "ready";
+			card.asset = relativeAsset;
+			card.requestId = requestId;
+			delete card.error;
 			return board;
 		});
 	}
@@ -20495,14 +20509,14 @@ var MindArtStore = class {
 		return this.mutateBoard(located.boardId, (board) => {
 			const request = board.requests[requestId];
 			if (!request) throw new Error(`Request not found: ${requestId}`);
-			const node = flattenBoard(board.root).get(request.nodeId)?.node;
-			if (!node) throw new Error(`Request node not found: ${request.nodeId}`);
+			const card = board.nodes.find((node) => node.id === request.nodeId);
+			if (!card) throw new Error(`Request node not found: ${request.nodeId}`);
 			const now = (/* @__PURE__ */ new Date()).toISOString();
 			request.status = "error";
 			request.error = message;
 			request.resolvedAt = now;
-			node.status = "error";
-			node.error = message;
+			card.status = "error";
+			card.error = message;
 			return board;
 		});
 	}
@@ -20533,71 +20547,58 @@ var MindArtStore = class {
 		if (sourcePath) await copyFile(sourcePath, destination);
 		else await writeFile(destination, imageData);
 		const updated = await this.mutateBoard(board.id, (draft) => {
-			const nodes = flattenBoard(draft.root);
-			const parent = options.parentNodeId ? nodes.get(options.parentNodeId)?.node : draft.root;
-			if (!parent) throw new Error(`Parent node not found: ${options.parentNodeId}`);
-			const refs = buildSourceReferences(nodes, parent, nodeId, options.sources ?? []);
+			const cards = cardsById(draft);
+			const sources = orderSources(options.sources ?? [], options.parentNodeId);
+			const primary = sources[0] ? cards.get(sources[0].nodeId) : void 0;
+			if (options.parentNodeId && options.parentNodeId !== DETACHED_SENTINEL && !cards.has(options.parentNodeId)) throw new Error(`Parent node not found: ${options.parentNodeId}`);
+			const refs = buildSourceReferences(cards, nodeId, sources);
 			const prompt = options.prompt?.trim();
-			parent.children.push({
+			const position = options.x !== void 0 && options.y !== void 0 ? {
+				x: options.x,
+				y: options.y
+			} : placeCard(draft.nodes, primary);
+			draft.nodes.push({
 				id: nodeId,
 				title: options.title?.trim() || defaultTitle || "素材图",
 				status: "ready",
 				...prompt ? { prompt } : {},
 				asset: relativeAsset,
-				expanded: true,
-				children: [],
-				refs
+				...refs.length ? { refs } : {},
+				...position
 			});
 			return draft;
 		});
 		return {
 			board: updated,
 			nodeId,
-			refs: (flattenBoard(updated.root).get(nodeId)?.node)?.refs ?? []
+			refs: updated.nodes.find((card) => card.id === nodeId)?.refs ?? []
 		};
 	}
 	/**
 	* Record where an existing card's image came from.
 	*
-	* In MindArt the tree parent *is* the primary source, so setting the primary
-	* source moves the card onto that branch. Everything else becomes a
-	* cross-branch reference. This is the repair path for a board whose cards
-	* were dropped in flat before anyone said how they relate.
+	* The first reference is the primary source, so setting parentNodeId moves
+	* that card to the front of the list. This is the repair path for a board
+	* whose cards were dropped in flat before anyone said how they relate.
 	*/
 	async linkSources(boardId, nodeId, options) {
 		const board = await this.mutateBoard(boardId, (draft) => {
-			const nodes = flattenBoard(draft.root);
-			const location = nodes.get(nodeId);
-			if (!location) throw new Error(`Node not found: ${nodeId}`);
-			if (!location.parent) throw new Error("The board root has no sources");
-			const originalParent = location.parent;
-			let parent = location.parent;
-			if (options.parentNodeId !== void 0 && options.parentNodeId !== parent.id) {
-				const nextParent = nodes.get(options.parentNodeId)?.node;
-				if (!nextParent) throw new Error(`Parent node not found: ${options.parentNodeId}`);
-				if (nextParent.id === nodeId) throw new Error("A card cannot be its own source");
-				if (flattenBoard(location.node).has(nextParent.id)) throw new Error(`Cannot move ${nodeId} under its own descendant ${nextParent.id}`);
-				parent.children = parent.children.filter((child) => child.id !== nodeId);
-				nextParent.children.push(location.node);
-				parent = nextParent;
-			}
-			const sources = options.sources ?? (location.node.refs ?? []).flatMap((reference) => {
-				if (reference.source !== "parent") return [{
-					nodeId: reference.source,
-					usage: reference.usage
-				}];
-				return parent.id === originalParent.id && reference.usage ? [{
-					nodeId: parent.id,
-					usage: reference.usage
-				}] : [];
-			});
-			location.node.refs = buildSourceReferences(nodes, parent, nodeId, sources);
+			const cards = cardsById(draft);
+			const card = cards.get(nodeId);
+			if (!card) throw new Error(`Node not found: ${nodeId}`);
+			if (options.parentNodeId && options.parentNodeId !== DETACHED_SENTINEL && !cards.has(options.parentNodeId)) throw new Error(`Parent node not found: ${options.parentNodeId}`);
+			const refs = buildSourceReferences(cards, nodeId, orderSources(options.sources ?? (card.refs ?? []).map((reference) => ({
+				nodeId: reference.source,
+				usage: reference.usage
+			})), options.parentNodeId));
+			if (refs.length) card.refs = refs;
+			else delete card.refs;
 			return draft;
 		});
 		return {
 			board,
 			nodeId,
-			refs: (flattenBoard(board.root).get(nodeId)?.node)?.refs ?? []
+			refs: board.nodes.find((card) => card.id === nodeId)?.refs ?? []
 		};
 	}
 	/**
@@ -21082,8 +21083,8 @@ var appOnlyMeta = { ui: {
 } };
 /**
 * Every source image a card was made from, in the order it was fed to the
-* generator, each with what was taken from it. The tree parent may appear here
-* by its own node id to give it a usage note; it is always reference 1.
+* generator, each with what was taken from it. The first source is the
+* primary one — reference 1.
 */
 var SourceListSchema = array(object$1({
 	node_id: string().trim().min(1),
@@ -21102,7 +21103,7 @@ function toSourceInputs(sources) {
 */
 function describeLineage(refs) {
 	if (refs.length === 0) return "No source images recorded. If this image was generated from cards on this board, call mindart_link_sources to record them.";
-	return `Sources: ${refs.map((reference) => reference.source === "parent" ? "its parent card" : reference.source).join(", ")}.`;
+	return `Sources: ${refs.map((reference) => reference.source).join(", ")}.`;
 }
 function success(message, structuredContent) {
 	return {
@@ -21142,7 +21143,7 @@ function registerMindArtTools(server, initialStore) {
 	});
 	K3(server, "mindart_get_board", {
 		title: "Get MindArt Board",
-		description: "Read a MindArt board, including its image-card tree, references, and generation history.",
+		description: "Read a MindArt board, including its image cards, their positions and references, and generation history.",
 		inputSchema: object$1({ board_id: BoardIdSchema }),
 		outputSchema: object$1({ board: BoardSchema }),
 		_meta: canvasMeta
@@ -21176,7 +21177,7 @@ function registerMindArtTools(server, initialStore) {
 	});
 	K3(server, "mindart_request_generation", {
 		title: "Queue MindArt Generation",
-		description: "Queue an image generation request compiled from a target card, its parent image, and up to four cross-branch references. This tool is called only by the MindArt canvas.",
+		description: "Queue an image generation request compiled from a target card and up to five source reference images. This tool is called only by the MindArt canvas.",
 		inputSchema: object$1({
 			board_id: BoardIdSchema,
 			node_id: string().trim().min(1),
@@ -21225,7 +21226,7 @@ function registerMindArtTools(server, initialStore) {
 	});
 	K3(server, "mindart_update_board", {
 		title: "Update MindArt Board",
-		description: "Persist board title, style, tree, references, and history changes made in the MindArt canvas. This tool is called only by the canvas.",
+		description: "Persist board title, style, card, position, and reference changes made in the MindArt canvas. This tool is called only by the canvas.",
 		inputSchema: object$1({
 			board_id: BoardIdSchema,
 			patch: BoardPatchSchema
@@ -21275,15 +21276,17 @@ function registerMindArtTools(server, initialStore) {
 	});
 	K3(server, "mindart_import_image", {
 		title: "Import Image Into MindArt",
-		description: "Import an uploaded image or local project image into a MindArt board as a ready image card. Provide image_data with file_name, or provide source_path. A MindArt board is a genealogy of images, not a gallery, and one rule decides where a card belongs: its parent is the image you actually fed to the generator. So for an image you just generated, set parent_node_id to the card whose image you built on and list every card you fed in sources, in generator order, each with what you took from it. An edit of a card hangs off that card; another attempt at a result the user rejected hangs off that result's parent, beside it, because you fed its inputs rather than the result itself; variants from one prompt are siblings sharing a parent. Omit both only for an image with no source on the board, such as a file the user just supplied.",
+		description: "Import an uploaded image or local project image into a MindArt board as a ready image card on the canvas. Provide image_data with file_name, or provide source_path. A MindArt board is a genealogy of images, not a gallery, and one rule decides how a card connects: its sources are the images you actually fed to the generator. So for an image you just generated, list every card you fed in sources, in generator order, each with what you took from it, and set parent_node_id to the primary one. An edit of a card links back to that card; another attempt at a result the user rejected links to that result's sources, because you fed its inputs rather than the result itself. Omit sources only for an image with no source on the board, such as a file the user just supplied.",
 		inputSchema: object$1({
 			board_id: BoardIdSchema.optional(),
 			source_path: string().trim().min(1).optional(),
 			image_data: string().trim().min(1).max(MAX_IMPORT_IMAGE_BASE64_LENGTH).optional(),
 			file_name: string().trim().min(1).max(255).optional(),
 			mime_type: string().trim().min(1).max(100).optional(),
-			parent_node_id: string().trim().min(1).optional().describe("Card this image was primarily derived from. It becomes the new card's parent and its first reference image. Defaults to the board root, which means the image has no source on the board."),
+			parent_node_id: string().trim().min(1).optional().describe("Card this image was primarily derived from. It becomes the new card's first reference image. Omit for an image with no source on the board."),
 			sources: SourceListSchema.optional().describe("Every card whose image fed this one, in generator order. Each becomes a numbered reference and draws a link back to its source card. Include parent_node_id here too, to record what was taken from it."),
+			x: number().finite().optional().describe("Canvas position for the new card. Omit to auto-place it."),
+			y: number().finite().optional(),
 			prompt: string().trim().min(1).max(2e4).optional().describe("Instruction that produced this image. Recorded on the card so it can be regenerated from the canvas."),
 			title: string().trim().min(1).max(200).optional()
 		}),
@@ -21293,12 +21296,11 @@ function registerMindArtTools(server, initialStore) {
 			refs: array(object$1({
 				order: number(),
 				source: string(),
-				usage: string(),
-				refLineId: string().optional()
+				usage: string()
 			}))
 		}),
 		_meta: canvasMeta
-	}, async ({ board_id, source_path, image_data, file_name, mime_type, parent_node_id, sources, prompt, title }) => {
+	}, async ({ board_id, source_path, image_data, file_name, mime_type, parent_node_id, sources, prompt, title, x, y }) => {
 		if (Boolean(source_path) === Boolean(image_data)) throw new Error("Provide either image_data or source_path");
 		if (image_data && !file_name) throw new Error("file_name is required with image_data");
 		const result = await store.importImage({
@@ -21310,17 +21312,19 @@ function registerMindArtTools(server, initialStore) {
 			...parent_node_id === void 0 ? {} : { parentNodeId: parent_node_id },
 			...sources === void 0 ? {} : { sources: toSourceInputs(sources) },
 			...prompt === void 0 ? {} : { prompt },
-			...title === void 0 ? {} : { title }
+			...title === void 0 ? {} : { title },
+			...x === void 0 ? {} : { x },
+			...y === void 0 ? {} : { y }
 		});
 		return success(`Imported image as node ${result.nodeId}. ${describeLineage(result.refs)}`, result);
 	});
 	K3(server, "mindart_link_sources", {
 		title: "Link MindArt Image Sources",
-		description: "Record which cards an existing card's image came from. In MindArt the branch is the lineage, so parent_node_id moves the card onto the branch of the image it was built on, and sources records every source image with what was taken from each. Use this to repair a card that landed on the board without its sources, or when the user says one image was made from another.",
+		description: "Record which cards an existing card's image came from. The first source is the primary one, so parent_node_id moves that card to the front, and sources records every source image with what was taken from each. Use this to repair a card that landed on the board without its sources, or when the user says one image was made from another.",
 		inputSchema: object$1({
 			board_id: BoardIdSchema,
 			node_id: string().trim().min(1),
-			parent_node_id: string().trim().min(1).optional().describe("Card this image was primarily derived from. Pass the board root id to detach the card from any source. Omit to leave the card where it is."),
+			parent_node_id: string().trim().min(1).optional().describe("Card this image was primarily derived from. It moves to the front of the reference list. Omit to keep the current order."),
 			sources: SourceListSchema.optional().describe("Every card whose image fed this one, in generator order. Replaces the card's existing references; omit to keep them, pass an empty array to clear them.")
 		}),
 		outputSchema: object$1({
@@ -21329,8 +21333,7 @@ function registerMindArtTools(server, initialStore) {
 			refs: array(object$1({
 				order: number(),
 				source: string(),
-				usage: string(),
-				refLineId: string().optional()
+				usage: string()
 			}))
 		}),
 		_meta: canvasMeta

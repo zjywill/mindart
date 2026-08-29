@@ -7,38 +7,35 @@ describe("generation compiler", () => {
   it("compiles numbered images, usage notes, board style, and card note", () => {
     const board = createEmptyBoard("board-compile", "Compile");
     board.styleNote = "棚拍，低饱和";
-    board.root.children = [
+    board.nodes = [
       {
-        id: "parent",
+        id: "body",
         title: "Body",
         status: "ready",
         asset: "assets/body.png",
-        children: [
-          {
-            id: "target",
-            title: "Result",
-            status: "draft",
-            prompt: "组合成一个新角色",
-            note: "保留破损斗篷",
-            refs: [
-              { order: 1, source: "parent", usage: "体型" },
-              {
-                order: 2,
-                source: "palette",
-                usage: "绿色配色",
-                refLineId: "ref-palette-target",
-              },
-            ],
-            children: [],
-          },
-        ],
+        x: 0,
+        y: 0,
       },
       {
         id: "palette",
         title: "Palette",
         status: "ready",
         asset: "assets/palette.png",
-        children: [],
+        x: 340,
+        y: 0,
+      },
+      {
+        id: "target",
+        title: "Result",
+        status: "draft",
+        prompt: "组合成一个新角色",
+        note: "保留破损斗篷",
+        refs: [
+          { order: 1, source: "body", usage: "体型" },
+          { order: 2, source: "palette", usage: "绿色配色" },
+        ],
+        x: 0,
+        y: 560,
       },
     ];
 
@@ -64,22 +61,23 @@ describe("generation compiler", () => {
 
   it("tells the host to feed reference images as images, not as text", () => {
     const board = createEmptyBoard("board-refs", "Refs");
-    board.root.children = [
+    board.nodes = [
       {
-        id: "parent",
-        title: "Parent",
+        id: "source",
+        title: "Source",
         status: "ready",
-        asset: "assets/parent.png",
-        children: [
-          {
-            id: "target",
-            title: "Result",
-            status: "draft",
-            prompt: "换个场景",
-            refs: [{ order: 1, source: "parent", usage: "主体" }],
-            children: [],
-          },
-        ],
+        asset: "assets/source.png",
+        x: 0,
+        y: 0,
+      },
+      {
+        id: "target",
+        title: "Result",
+        status: "draft",
+        prompt: "换个场景",
+        refs: [{ order: 1, source: "source", usage: "主体" }],
+        x: 0,
+        y: 560,
       },
     ];
 
@@ -98,12 +96,13 @@ describe("generation compiler", () => {
 
   it("omits the reference-image rules when a card has no references", () => {
     const board = createEmptyBoard("board-no-refs", "No refs");
-    board.root.children.push({
+    board.nodes.push({
       id: "target",
       title: "Target",
       status: "draft",
       prompt: "从零画一张",
-      children: [],
+      x: 0,
+      y: 0,
     });
 
     const result = compileGenerationRequest(
@@ -119,11 +118,12 @@ describe("generation compiler", () => {
 
   it("requires a prompt", () => {
     const board = createEmptyBoard("board-empty-prompt", "Empty");
-    board.root.children.push({
+    board.nodes.push({
       id: "target",
       title: "Target",
       status: "draft",
-      children: [],
+      x: 0,
+      y: 0,
     });
 
     expect(() =>

@@ -1,5 +1,11 @@
 # MindArt — 思维导图式 AI 图像生成插件 · 技术方案
 
+> **2026-08 形态变更**：v0.4 起交互范式已从本方案 §4 定调的「XMind 式结构树」
+> 改为**自由画布**（参照 [LibTV](https://www.liblib.tv/)，见 issue #1）：卡片带
+> `x/y` 自由摆放，隐式父级引用与 refLines 合并为卡片上统一的显式 refs，
+> ready 卡的图与提示词不可变，「编辑」一律派生新卡并连血缘线。§4 的树形交互
+> 描述仅存档；生成语义层（参考图 + 取用说明 + 编译 → 宿主出图 → 回填）不变。
+
 > 状态：MVP 已实现（自动化验证完成；真实宿主矩阵待手工验收）
 > 目标宿主：Codex（CLI / VS Code / Codex App）与 Claude（Claude Code / Claude Desktop / claude.ai）
 > 协议基座：MCP + MCP Apps 官方扩展（`io.modelcontextprotocol/ui`，spec 版本 2026-01-26）

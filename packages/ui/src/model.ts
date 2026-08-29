@@ -9,10 +9,9 @@ export interface NodeReference {
   order: number;
   source: string;
   usage: string;
-  refLineId?: string | undefined;
 }
 
-export interface BoardNode {
+export interface BoardCard {
   id: string;
   title: string;
   status?: NodeStatus | undefined;
@@ -22,14 +21,8 @@ export interface BoardNode {
   requestId?: string | undefined;
   asset?: string | undefined;
   error?: string | undefined;
-  expanded?: boolean | undefined;
-  children: BoardNode[];
-}
-
-export interface ReferenceLine {
-  id: string;
-  from: string;
-  to: string;
+  x: number;
+  y: number;
 }
 
 export interface GenerationReference {
@@ -50,12 +43,11 @@ export interface GenerationRecord {
 }
 
 export interface Board {
-  version: 1;
+  version: 2;
   id: string;
   title: string;
   styleNote: string;
-  root: BoardNode;
-  refLines: ReferenceLine[];
+  nodes: BoardCard[];
   requests: Record<string, GenerationRecord>;
   createdAt: string;
   updatedAt: string;
@@ -72,106 +64,88 @@ export interface GenerationRequestInput {
   refs: RequestReferenceInput[];
 }
 
-export interface NodeLocation {
-  node: BoardNode;
-  parent: BoardNode | null;
-}
-
-export function flattenBoard(root: BoardNode): Map<string, NodeLocation> {
-  const nodes = new Map<string, NodeLocation>();
-  const visit = (node: BoardNode, parent: BoardNode | null): void => {
-    nodes.set(node.id, { node, parent });
-    node.children.forEach((child) => visit(child, node));
-  };
-  visit(root, null);
-  return nodes;
+export function cardsById(board: Board): Map<string, BoardCard> {
+  return new Map(board.nodes.map((card) => [card.id, card]));
 }
 
 export function cloneBoard(board: Board): Board {
   return structuredClone(board);
 }
 
-export function findNode(board: Board, nodeId: string): NodeLocation | undefined {
-  return flattenBoard(board.root).get(nodeId);
+export function findCard(board: Board, nodeId: string): BoardCard | undefined {
+  return board.nodes.find((card) => card.id === nodeId);
 }
 
-export function referencesForNode(
+export function referencesForCard(
   board: Board,
-  node: BoardNode,
-): Array<{ sourceNode: BoardNode; reference: NodeReference }> {
-  const nodes = flattenBoard(board.root);
-  const parent = nodes.get(node.id)?.parent;
-  const output: Array<{ sourceNode: BoardNode; reference: NodeReference }> = [];
-
-  for (const reference of node.refs ?? []) {
-    const sourceNode =
-      reference.source === "parent"
-        ? parent
-        : nodes.get(reference.source)?.node;
-    if (sourceNode) output.push({ sourceNode, reference });
+  card: BoardCard,
+): Array<{ sourceCard: BoardCard; reference: NodeReference }> {
+  const cards = cardsById(board);
+  const output: Array<{ sourceCard: BoardCard; reference: NodeReference }> = [];
+  for (const reference of card.refs ?? []) {
+    const sourceCard = cards.get(reference.source);
+    if (sourceCard) output.push({ sourceCard, reference });
   }
   return output;
 }
 
+/**
+ * The cards a given card was made from, then the cards made from those,
+ * all the way up. Used to light up a lineage on the canvas. References can
+ * in principle loop, so walk with a visited set.
+ */
+export function lineageOf(board: Board, nodeId: string): Set<string> {
+  const cards = cardsById(board);
+  const lineage = new Set<string>([nodeId]);
+
+  const walkUp = (id: string): void => {
+    for (const reference of cards.get(id)?.refs ?? []) {
+      if (lineage.has(reference.source)) continue;
+      lineage.add(reference.source);
+      walkUp(reference.source);
+    }
+  };
+  const walkDown = (id: string): void => {
+    for (const card of board.nodes) {
+      if (lineage.has(card.id)) continue;
+      if ((card.refs ?? []).some((reference) => reference.source === id)) {
+        lineage.add(card.id);
+        walkDown(card.id);
+      }
+    }
+  };
+  walkUp(nodeId);
+  walkDown(nodeId);
+  return lineage;
+}
+
 export function normalizeClientBoard(board: Board): Board {
-  const nodes = flattenBoard(board.root);
-  const validIds = new Set(nodes.keys());
+  const cards = cardsById(board);
 
-  for (const { node, parent } of nodes.values()) {
-    if (!parent) {
-      node.refs = [];
-      continue;
-    }
-
-    const refs: NodeReference[] = [];
+  for (const card of board.nodes) {
     const seen = new Set<string>();
-    const oldParent = node.refs?.find(
-      (reference) => reference.source === "parent" || reference.order === 1,
-    );
-    if (parent.asset) {
-      refs.push({
-        order: 1,
-        source: "parent",
-        usage: oldParent?.usage ?? "",
-      });
-      seen.add(parent.id);
-    }
-
-    for (const reference of node.refs ?? []) {
-      if (
-        reference.source === "parent" ||
-        !validIds.has(reference.source) ||
-        seen.has(reference.source) ||
-        refs.length >= 5
-      ) {
+    const refs: NodeReference[] = [];
+    const ordered = [...(card.refs ?? [])].sort((a, b) => a.order - b.order);
+    for (const reference of ordered) {
+      const source = cards.get(reference.source);
+      if (!source?.asset || source.id === card.id || seen.has(source.id)) {
         continue;
       }
-      const source = nodes.get(reference.source)?.node;
-      if (!source?.asset || source.id === node.id) continue;
+      if (refs.length >= 5) break;
       refs.push({
         order: refs.length + 1,
         source: source.id,
         usage: reference.usage,
-        refLineId: reference.refLineId ?? `ref-${source.id}-${node.id}`,
       });
       seen.add(source.id);
     }
-    node.refs = refs;
-  }
-
-  board.refLines = [];
-  for (const { node } of nodes.values()) {
-    for (const reference of node.refs ?? []) {
-      if (reference.source === "parent") continue;
-      const id = reference.refLineId ?? `ref-${reference.source}-${node.id}`;
-      reference.refLineId = id;
-      board.refLines.push({ id, from: reference.source, to: node.id });
-    }
+    if (refs.length) card.refs = refs;
+    else delete card.refs;
   }
 
   board.requests = Object.fromEntries(
     Object.entries(board.requests).filter(([, request]) =>
-      validIds.has(request.nodeId),
+      cards.has(request.nodeId),
     ),
   );
   return board;
