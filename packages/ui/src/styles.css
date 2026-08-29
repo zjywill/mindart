@@ -1196,7 +1196,14 @@ button:disabled {
     0 18px 50px var(--mindart-shadow);
 }
 
-.asset-error .card-media::after {
+/* A src-less asset image is still loading or failed to load; the browser
+   would otherwise paint its broken-image glyph and alt text. */
+img[data-asset]:not([src]) {
+  visibility: hidden;
+}
+
+.asset-error .card-media::after,
+.asset-missing .card-media::after {
   position: absolute;
   inset: 0;
   display: grid;
@@ -1205,6 +1212,11 @@ button:disabled {
   content: "图片加载失败";
   place-items: center;
   background: var(--mindart-surface-raised);
+}
+
+.asset-missing .card-media::after {
+  color: var(--mindart-faint);
+  content: "图片文件已丢失";
 }
 
 me-main {

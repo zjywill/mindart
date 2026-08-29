@@ -20621,10 +20621,17 @@ var MindArtStore = class {
 		const extension = path.extname(filePath).toLowerCase();
 		const mimeType = MIME_TYPES[extension];
 		if (!mimeType) throw new Error(`Unsupported image type: ${extension}`);
+		let data;
+		try {
+			data = await readFile(filePath);
+		} catch (error) {
+			if (isMissingFile(error)) throw new Error(`Asset missing: ${normalized}`);
+			throw error;
+		}
 		return {
 			path: normalized,
 			mimeType,
-			data: (await readFile(filePath)).toString("base64")
+			data: data.toString("base64")
 		};
 	}
 	async findRequest(requestId) {

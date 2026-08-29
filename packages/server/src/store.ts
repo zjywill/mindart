@@ -642,7 +642,18 @@ export class MindArtStore {
     const extension = path.extname(filePath).toLowerCase();
     const mimeType = MIME_TYPES[extension];
     if (!mimeType) throw new Error(`Unsupported image type: ${extension}`);
-    const data = await readFile(filePath);
+    let data: Buffer;
+    try {
+      data = await readFile(filePath);
+    } catch (error) {
+      // The raw ENOENT message carries an absolute path and looks transient.
+      // The canvas needs a stable marker to tell "the file is gone" apart
+      // from failures worth retrying.
+      if (isMissingFile(error)) {
+        throw new Error(`Asset missing: ${normalized}`);
+      }
+      throw error;
+    }
     return {
       path: normalized,
       mimeType,

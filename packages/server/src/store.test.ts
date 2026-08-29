@@ -251,6 +251,13 @@ describe("MindArtStore", () => {
     ).rejects.toThrow("at most 5 reference images");
   });
 
+  it("reports a deleted asset file as missing, not as a read failure", async () => {
+    await store.openBoard("board-missing", "Missing");
+    await expect(
+      store.readAsset("board-missing", "assets/gone.png"),
+    ).rejects.toThrow("Asset missing: assets/gone.png");
+  });
+
   it("rejects asset path traversal", async () => {
     await store.openBoard("board-traversal", "Traversal");
     await expect(

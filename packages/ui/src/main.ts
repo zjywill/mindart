@@ -518,6 +518,9 @@ function bindMindEvents(instance: MindElixirInstance): void {
   instance.bus.addListener("operation", (operation: unknown) => {
     void handleMindOperation(operation);
   });
+  instance.bus.addListener("expandNode", () => {
+    rehydrateMapView();
+  });
 }
 
 async function handleMindOperation(rawOperation: unknown): Promise<void> {
@@ -986,6 +989,17 @@ async function generateNode(nodeId: string): Promise<void> {
   }
 }
 
+/**
+ * mind-elixir rebuilds the map DOM outside renderBoard too: focusNode,
+ * cancelFocus, and the collapse/expand toggle all recreate card elements.
+ * A recreated <img data-asset> has no src until it is hydrated again, so
+ * every such rebuild must be followed by this.
+ */
+function rehydrateMapView(): void {
+  hydrateAssets();
+  bindCardControlKeys();
+}
+
 function hydrateAssets(): void {
   if (!board) return;
   assetObserver?.disconnect();
@@ -1071,7 +1085,9 @@ async function loadImage(image: HTMLImageElement, attempt = 0): Promise<void> {
     const dataUrl = `data:${result.mimeType};base64,${result.data}`;
     assetCache.set(`${boardId}\0${asset}`, dataUrl);
     if (board?.id !== boardId) return;
-    image.closest(".image-card")?.classList.remove("asset-error");
+    image
+      .closest(".image-card")
+      ?.classList.remove("asset-error", "asset-missing");
     appRoot
       .querySelectorAll<HTMLImageElement>(
         `img[data-asset="${CSS.escape(asset)}"]`,
@@ -1080,17 +1096,25 @@ async function loadImage(image: HTMLImageElement, attempt = 0): Promise<void> {
         target.src = dataUrl;
       });
   } catch (error) {
+    // "Asset missing" is the server saying the file no longer exists on
+    // disk — deleted outside MindArt. Retrying will not bring it back.
+    const missing = errorMessage(error).includes("Asset missing");
     // The observer unobserved this image before calling us, so without a retry
     // one failure leaves the card broken for the rest of the session.
     const delay = ASSET_RETRY_DELAYS_MS[attempt];
-    if (delay !== undefined && board?.id === boardId && image.isConnected) {
+    if (
+      !missing &&
+      delay !== undefined &&
+      board?.id === boardId &&
+      image.isConnected
+    ) {
       window.setTimeout(() => {
         void loadImage(image, attempt + 1);
       }, delay);
       return;
     }
     const card = image.closest(".image-card");
-    card?.classList.add("asset-error");
+    card?.classList.add(missing ? "asset-missing" : "asset-error");
     // Swallowing this entirely is why "图片加载失败" was undiagnosable.
     card?.setAttribute("title", errorMessage(error));
     console.error(`mindart: failed to load ${asset}`, error);
@@ -1474,10 +1498,12 @@ async function runContextMenuAction(action: string): Promise<void> {
   }
   if (action === "focus") {
     mind.focusNode(topic);
+    rehydrateMapView();
     return;
   }
   if (action === "cancel-focus") {
     mind.cancelFocus();
+    rehydrateMapView();
     return;
   }
   if (action === "delete") {
