@@ -21082,6 +21082,16 @@ var appOnlyMeta = { ui: {
 	visibility: ["app"]
 } };
 /**
+* Callable by both the model and the canvas, but renders nothing.
+*
+* A host opens a panel for every model-initiated call to a tool that declares
+* the canvas resource. Reading the board is routine — the model does it to
+* resolve node ids before recording lineage — so declaring the resource here
+* flashed a second canvas onto the screen every time the model looked
+* something up. Showing the board is what mindart_open_canvas is for.
+*/
+var silentMeta = { ui: { visibility: ["model", "app"] } };
+/**
 * Every source image a card was made from, in the order it was fed to the
 * generator, each with what was taken from it. The first source is the
 * primary one — reference 1.
@@ -21146,7 +21156,7 @@ function registerMindArtTools(server, initialStore) {
 		description: "Read a MindArt board, including its image cards, their positions and references, and generation history.",
 		inputSchema: object$1({ board_id: BoardIdSchema }),
 		outputSchema: object$1({ board: BoardSchema }),
-		_meta: canvasMeta
+		_meta: silentMeta
 	}, async ({ board_id }) => {
 		const board = await store.getBoard(board_id);
 		return success(`Loaded MindArt board "${board.title}".`, { board });

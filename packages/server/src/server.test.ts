@@ -79,6 +79,20 @@ describe("MCP server", () => {
         ).toEqual(["app"]);
       }
 
+      // Reading the board is routine model work — it resolves node ids before
+      // recording lineage. Declaring the canvas resource here would open a
+      // panel every time it looks something up, on top of the one the user
+      // asked for. It must still be callable from the canvas, which polls it.
+      const getBoard = tools.tools.find(
+        (tool) => tool.name === "mindart_get_board",
+      );
+      const getBoardUi = getBoard?._meta?.ui as {
+        resourceUri?: string;
+        visibility?: string[];
+      };
+      expect(getBoardUi.resourceUri).toBeUndefined();
+      expect(getBoardUi.visibility).toEqual(["model", "app"]);
+
       // The host opens a panel per model-initiated call to a resource-bearing
       // tool, and collapses panels that share a key. Every such tool must carry
       // the key or the session accumulates duplicate canvases.
